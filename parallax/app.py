@@ -52,9 +52,83 @@ AXIS_COLOR   = {"X": BLUE, "Y": AMBER, "Z": PURPLE}
 OUTCOME_SYM  = {"success": "✓", "partial": "◑", "in_progress": "…", "failed": "✗"}
 
 st.markdown(f"""<style>
-.stApp {{ background: {BG}; color: {TEXT}; }}
+:root {{ color-scheme: light; }}
+.stApp {{ background: {BG} !important; color: {TEXT} !important; }}
 .main .block-container {{ padding: 1.6rem 2.8rem 1.6rem; max-width: 100%; }}
 #MainMenu, footer, header {{ display: none; }}
+
+/* Force light-mode text on every native Streamlit text primitive. Without
+   this, macOS/system dark mode paints these white on white. */
+.stApp p, .stApp span, .stApp label, .stApp div[data-testid="stMarkdownContainer"] {{
+    color: {TEXT};
+}}
+.stApp * {{ color-scheme: light; }}
+
+/* Radio group: the Simplified/Advanced toggle in the header. Force option
+   labels visible against the light background. */
+div[data-testid="stRadio"] > label,
+div[data-testid="stRadio"] label,
+div[data-testid="stRadio"] label > div p,
+div[data-testid="stRadio"] label > div,
+div[data-testid="stRadio"] * {{
+    color: {TEXT} !important;
+    background: transparent !important;
+}}
+div[data-testid="stRadio"] {{
+    background: {WHITE};
+    border: 1px solid {BORDER_S};
+    border-radius: 10px;
+    padding: 4px 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}}
+
+/* Expanders. Streamlit 1.60 renders them as <div data-testid="stExpander">
+   with a summary and a body div. Force the light palette on both. */
+div[data-testid="stExpander"] {{
+    background: {WHITE} !important;
+    border: 1.5px solid {BORDER_S} !important;
+    border-radius: 10px !important;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.06);
+    overflow: hidden;
+}}
+div[data-testid="stExpander"] summary,
+div[data-testid="stExpander"] details > summary {{
+    background: {WHITE} !important;
+    color: {TEXT} !important;
+    font-weight: 700 !important;
+    padding: 13px 18px !important;
+}}
+div[data-testid="stExpander"] summary:hover,
+div[data-testid="stExpander"] details > summary:hover {{
+    background: #f8fafc !important;
+}}
+div[data-testid="stExpander"] p,
+div[data-testid="stExpander"] span,
+div[data-testid="stExpander"] label,
+div[data-testid="stExpander"] div,
+div[data-testid="stExpander"] summary,
+div[data-testid="stExpanderDetails"],
+div[data-testid="stExpanderDetails"] * {{
+    color: {TEXT} !important;
+    background-color: transparent !important;
+}}
+div[data-testid="stExpanderDetails"] {{
+    background: {WHITE} !important;
+    padding: 18px !important;
+    border-top: 1.5px solid {BORDER} !important;
+}}
+
+/* Sliders + selectboxes inside expanders — keep them readable */
+div[data-testid="stSlider"] label,
+div[data-testid="stSelectbox"] label {{
+    color: {TEXT} !important;
+}}
+
+/* Toggle switch label ("Drive spacecraft ADCS telemetry…") */
+div[data-testid="stToggle"] label,
+div[data-testid="stToggle"] * {{
+    color: {TEXT} !important;
+}}
 
 .stButton button {{
     background: {WHITE} !important;

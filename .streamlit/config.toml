@@ -1,0 +1,17 @@
+# Force light theme so the hardcoded palette in app.py always renders on the
+# right background. Without this, Streamlit picks up the OS-level dark mode
+# and paints radio labels / expander bodies with white text on white
+# backgrounds (or vice versa).
+[theme]
+base = "light"
+primaryColor = "#2563eb"
+backgroundColor = "#f4f6fb"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1e293b"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
