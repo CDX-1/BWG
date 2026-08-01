@@ -21,10 +21,7 @@ except ImportError:  # pyserial is optional — the rest of the dashboard still 
     SERIAL_AVAILABLE = False
 
 
-# 115200 matches sketch_aug1c; the optimised parallax_handle sketch runs at
-# 460800 so a 50 Hz frame costs under 1.4 ms of line time.
-BAUD_RATE = 115200
-BAUD_OPTIONS = [115200, 460800, 921600]
+BAUD_RATE = 460800
 BUFFER_SAMPLES = 3000         # ~60 s of history at 50 Hz
 
 # Sensor sentinels emitted by the sketch when a peripheral does not answer.

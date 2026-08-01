@@ -17,7 +17,6 @@ from parallax.spacecraft import (
 from parallax.fdir import run_fdir, FDIRReport
 from parallax.gemma import run_predictive_analysis
 from parallax.models import GemmaPredictiveAnalysis
-from parallax.satellite_view import build_satellite_figure
 
 st.set_page_config(page_title="PARALLAX FDIR", page_icon="◈", layout="wide", initial_sidebar_state="collapsed")
 
@@ -271,11 +270,7 @@ def main():
 
     st.markdown("---")
 
-    tab_mission, tab_hardware = st.tabs(["◈  MISSION CONTROL", "⚙  HARDWARE LINK"])
-    with tab_mission:
-        _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_needed)
-    with tab_hardware:
-        _render_hardware_link()
+    _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_needed)
 
     # ── FOOTER ───────────────────────────────────────────────────────────────
     st.markdown("---")
@@ -283,6 +278,17 @@ def main():
         f'<div style="color:{TEXT_D};font-size:0.7em;text-align:center;">'
         f'PARALLAX · Autonomous FDIR with Gemma predictive intelligence · Asteria-7 deep-space mission</div>',
         unsafe_allow_html=True,
+    )
+
+
+def _live_model(height: int = 490):
+    """Canvas satellite panel driven by the loopback telemetry feed."""
+    palette = {"BG": BG, "WHITE": WHITE, "BORDER": BORDER, "BORDER_S": BORDER_S,
+               "TEXT": TEXT, "TEXT_M": TEXT_M, "TEXT_D": TEXT_D,
+               "GREEN": GREEN, "AMBER": AMBER, "RED": RED}
+    components.html(
+        live_panel.build_panel_html(_feed_port(), palette, FACE_COLORS, AXIS_COLOR),
+        height=height,
     )
 
 
@@ -315,6 +321,11 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
 
     st.markdown("---")
 
+    with st.expander("⚙  Hardware Link — Board Connection & Sensor Traces", expanded=False):
+        _render_hardware_expander()
+
+    st.markdown("---")
+
     # ── NOMINAL STATE ─────────────────────────────────────────────────────────
     if not fault_active:
         st.markdown(
@@ -327,11 +338,7 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
         _, mcol, _ = st.columns([1, 2.2, 1])
         with mcol:
-            st.plotly_chart(
-                build_satellite_figure(noisy),
-                use_container_width=True,
-                config={"displayModeBar": False},
-            )
+            _live_model()
             st.markdown(
                 f'<div style="text-align:center;color:{TEXT_D};font-size:0.78em;margin-top:-6px;">'
                 f'Select one or more faults above to see FDIR recovery and Gemma AI analysis in real time</div>',
@@ -404,11 +411,7 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
         with mid_col:
             _section_label("SPACECRAFT STATE")
 
-            st.plotly_chart(
-                build_satellite_figure(noisy),
-                use_container_width=True,
-                config={"displayModeBar": False},
-            )
+            _live_model(height=390)
 
             # Subsystem health grid
             hcols = st.columns(3)
@@ -584,17 +587,15 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
                         unsafe_allow_html=True,
                     )
 
-# ── Hardware link tab ─────────────────────────────────────────────────────────
+# ── Hardware resources (shared across the whole server process) ───────────────
 
 @st.cache_resource
 def _serial_link() -> hardware.SerialLink:
-    """One reader thread for the whole server, surviving Streamlit reruns."""
     return hardware.SerialLink()
 
 
 @st.cache_resource
 def _feed_port() -> int:
-    """Loopback port the browser panel polls. Started once per server."""
     return telemetry_server.start_server(_serial_link())
 
 
@@ -604,20 +605,14 @@ FACE_COLORS = {
     "+Z": PURPLE, "-Z": "#d9c6fb",
 }
 
-
 CHART_MAX_POINTS = 400
 
 
 def _timeseries(samples, series, y_title, zero_line=False):
-    """Line chart over the sample buffer. `series` is [(label, attribute, color)]."""
-    # At 50 Hz the buffer holds a few thousand frames; drawing them all would
-    # cost more than it shows. Stride down to a sane number of points.
     stride = max(1, len(samples) // CHART_MAX_POINTS)
     samples = samples[::stride]
-
     now = time.time()
     age = [s.received_at - now for s in samples]
-
     fig = go.Figure()
     for label, attribute, color in series:
         values = [getattr(s, attribute) for s in samples]
@@ -626,12 +621,8 @@ def _timeseries(samples, series, y_title, zero_line=False):
             line={"color": color, "width": 2},
             hovertemplate=f"{label}: %{{y:.2f}}<extra></extra>",
         ))
-
     if zero_line:
         fig.add_hline(y=0, line={"color": BORDER_S, "width": 1})
-
-    # Margins leave room for tick labels and keep the x title clear of them;
-    # units live in the section heading, so the y axis carries ticks only.
     fig.update_layout(
         height=210, margin={"l": 46, "r": 12, "t": 30, "b": 40},
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -650,7 +641,7 @@ def _timeseries(samples, series, y_title, zero_line=False):
     return fig
 
 
-def _render_hardware_link():
+def _render_hardware_expander():
     link = _serial_link()
 
     if not hardware.SERIAL_AVAILABLE:
@@ -661,12 +652,10 @@ def _render_hardware_link():
         ), unsafe_allow_html=True)
         return
 
-    # ── Connection controls ──────────────────────────────────────────────────
-    _section_label("BOARD CONNECTION")
     ports = hardware.list_ports()
     port_ids = [device for device, _ in ports]
 
-    c1, cb, c2, c3, c4 = st.columns([2, 1, 1, 1, 2.4])
+    c1, c2, c3, c4 = st.columns([2.5, 1, 1, 2.4])
     with c1:
         if port_ids:
             default = port_ids.index(link.port) if link.port in port_ids else 0
@@ -677,15 +666,10 @@ def _render_hardware_link():
             port = None
             st.markdown(f'<div style="color:{TEXT_D};font-size:0.78em;padding-top:6px;">No serial ports found</div>',
                         unsafe_allow_html=True)
-    with cb:
-        baud = st.selectbox("Baud", hardware.BAUD_OPTIONS, index=0,
-                            format_func=lambda b: f"{b} baud", label_visibility="collapsed",
-                            help="115200 for sketch_aug1c. Use 460800 after flashing "
-                                 "parallax_handle, which streams at 50 Hz.")
     with c2:
         if st.button("▶ Connect", key="hw_connect", use_container_width=True, disabled=port is None):
-            link.start(port, baud)
-            time.sleep(1.2)   # let the reader thread bind the port or fail
+            link.start(port, hardware.BAUD_RATE)
+            time.sleep(1.2)
             st.rerun()
     with c3:
         if st.button("■ Disconnect", key="hw_disconnect", use_container_width=True,
@@ -714,32 +698,14 @@ def _render_hardware_link():
 
     if not link.is_running():
         st.markdown(
-            f'<div style="color:{TEXT_D};font-size:0.78em;margin-top:10px;line-height:1.6;">'
-            f'Select the board\'s port and press <strong>Connect</strong>. The Arduino IDE Serial Monitor '
-            f'must be closed — only one program can hold the port at a time.<br>'
-            f'Expected firmware: <code>sketch_aug1c</code> (MPU6050 gyro + accel, DS18B20 temperature, HC-SR04 range) '
+            f'<div style="color:{TEXT_D};font-size:0.78em;margin-top:8px;line-height:1.6;">'
+            f'Select the board\'s port and press <strong>Connect</strong>. '
+            f'Close the Arduino IDE Serial Monitor first — only one program can hold the port at a time.<br>'
+            f'Expected firmware: <code>parallax_handle</code> (MPU6050 gyro + accel, DS18B20, HC-SR04) '
             f'at {hardware.BAUD_RATE} baud.</div>',
             unsafe_allow_html=True,
         )
         return
-
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-    _section_label("BOARD ORIENTATION — LIVE ATTITUDE")
-
-    # The live panel is a component, not a fragment: Streamlit repaints by
-    # rerunning on the server, which remounts the chart and reads as a flicker.
-    # This iframe mounts once and animates itself from the loopback feed, so
-    # nothing on the Python side has to rerun to keep it moving.
-    components.html(
-        live_panel.build_panel_html(
-            _feed_port(),
-            {"BG": BG, "WHITE": WHITE, "BORDER": BORDER, "BORDER_S": BORDER_S,
-             "TEXT": TEXT, "TEXT_M": TEXT_M, "TEXT_D": TEXT_D,
-             "GREEN": GREEN, "AMBER": AMBER, "RED": RED},
-            FACE_COLORS, AXIS_COLOR,
-        ),
-        height=live_panel.PANEL_HEIGHT,
-    )
 
     _render_traces()
 
