@@ -54,7 +54,7 @@ OUTCOME_SYM  = {"success": "✓", "partial": "◑", "in_progress": "…", "faile
 
 st.markdown(f"""<style>
 .stApp {{ background: {BG}; color: {TEXT}; }}
-.main .block-container {{ padding: 1.4rem 2.8rem 1.4rem; max-width: 100%; }}
+.main .block-container {{ padding: 1.6rem 2.8rem 1.6rem; max-width: 100%; }}
 #MainMenu, footer, header {{ display: none; }}
 
 /* Fault trigger buttons */
@@ -62,33 +62,35 @@ st.markdown(f"""<style>
     background: {WHITE} !important;
     border: 1.5px solid {BORDER_S} !important;
     color: {TEXT_M} !important;
-    font-size: 0.78em !important;
+    font-size: 0.79em !important;
     font-weight: 600 !important;
-    padding: 12px 8px !important;
-    border-radius: 8px !important;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
-    transition: all 0.15s !important;
-    line-height: 1.3 !important;
+    padding: 13px 8px !important;
+    border-radius: 10px !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07) !important;
+    transition: all 0.14s ease !important;
+    line-height: 1.35 !important;
 }}
 .stButton button:hover {{
     border-color: {BLUE} !important;
     color: {BLUE} !important;
-    box-shadow: 0 3px 8px rgba(37,99,235,0.15) !important;
-    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 12px rgba(37,99,235,0.16) !important;
+    transform: translateY(-2px) !important;
 }}
 /* An active fault — click again to clear just that one */
 .stButton button[kind="primary"],
 .stButton button[data-testid="baseButton-primary"] {{
-    background: {RED}0f !important;
-    border-color: {RED} !important;
+    background: {RED}0d !important;
+    border-color: {RED}80 !important;
     color: {RED} !important;
+    box-shadow: 0 2px 8px rgba(220,38,38,0.12) !important;
 }}
 .stButton button[kind="primary"]:hover,
 .stButton button[data-testid="baseButton-primary"]:hover {{
-    background: {RED}1f !important;
+    background: {RED}18 !important;
     border-color: {RED} !important;
     color: {RED} !important;
-    box-shadow: 0 3px 8px rgba(220,38,38,0.18) !important;
+    box-shadow: 0 4px 12px rgba(220,38,38,0.2) !important;
+    transform: translateY(-2px) !important;
 }}
 
 /* Expander */
@@ -96,12 +98,13 @@ details summary {{
     background: {WHITE};
     border: 1.5px solid {BORDER_S};
     border-radius: 10px;
-    padding: 12px 18px;
+    padding: 13px 18px;
     font-weight: 700;
-    font-size: 0.85em;
+    font-size: 0.84em;
     color: {TEXT};
     cursor: pointer;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    box-shadow: 0 1px 5px rgba(0,0,0,0.06);
+    letter-spacing: 0.01em;
 }}
 details[open] summary {{ border-radius: 10px 10px 0 0; border-bottom: none; }}
 details > div {{
@@ -109,20 +112,23 @@ details > div {{
     border: 1.5px solid {BORDER_S};
     border-top: none;
     border-radius: 0 0 10px 10px;
-    padding: 16px;
+    padding: 18px;
 }}
 
-div[data-testid="stVerticalBlock"] > div {{ gap: 0.35rem; }}
-hr {{ border: none; border-top: 1.5px solid {BORDER}; margin: 8px 0; }}
+div[data-testid="stVerticalBlock"] > div {{ gap: 0.5rem; }}
+hr {{ border: none; border-top: 1.5px solid {BORDER}; margin: 10px 0; }}
+
+/* iframe (model viewer) — remove default margin */
+iframe {{ display: block; }}
 </style>""", unsafe_allow_html=True)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _card(body, left_color=None, bg=WHITE, padding="11px 14px"):
+def _card(body, left_color=None, bg=WHITE, padding="12px 14px"):
     ls = f"border-left: 4px solid {left_color};" if left_color else ""
-    return (f'<div style="background:{bg};border:1px solid {BORDER};border-radius:8px;'
-            f'padding:{padding};margin:4px 0;box-shadow:0 1px 4px rgba(0,0,0,0.05);{ls}">'
+    return (f'<div style="background:{bg};border:1px solid {BORDER};border-radius:10px;'
+            f'padding:{padding};margin:4px 0;box-shadow:0 2px 6px rgba(0,0,0,0.06);{ls}">'
             f'{body}</div>')
 
 
@@ -144,8 +150,9 @@ def _bar(pct, color, width=96):
 
 def _section_label(text):
     st.markdown(
-        f'<div style="font-size:0.68em;font-weight:700;color:{TEXT_D};letter-spacing:0.12em;'
-        f'margin-bottom:10px;">{text}</div>',
+        f'<div style="font-size:0.67em;font-weight:800;color:{TEXT_D};letter-spacing:0.13em;'
+        f'text-transform:uppercase;margin-bottom:10px;padding-bottom:6px;'
+        f'border-bottom:1.5px solid {BORDER};">{text}</div>',
         unsafe_allow_html=True,
     )
 
@@ -252,15 +259,18 @@ def main():
     ha, hb, hc = st.columns([1, 2, 1])
     with ha:
         st.markdown(
-            f'<div style="font-weight:800;color:{NAVY};font-size:1.65em;letter-spacing:0.04em;line-height:1.1;">PARALLAX</div>'
-            f'<div style="color:{TEXT_D};font-size:0.68em;font-weight:600;letter-spacing:0.12em;margin-top:1px;">FDIR + GEMMA INTELLIGENCE</div>',
+            f'<div style="font-weight:900;color:{NAVY};font-size:1.8em;letter-spacing:0.05em;'
+            f'line-height:1.05;">PARALLAX</div>'
+            f'<div style="color:{TEXT_D};font-size:0.67em;font-weight:700;letter-spacing:0.14em;'
+            f'margin-top:3px;">FDIR + GEMMA INTELLIGENCE</div>',
             unsafe_allow_html=True,
         )
     with hb:
         st.markdown(
-            f'<div style="text-align:center;padding-top:12px;color:{TEXT_D};font-size:0.74em;'
-            f'font-weight:500;letter-spacing:0.05em;">'
-            f'ASTERIA-7 &nbsp;·&nbsp; JUPITER APPROACH &nbsp;·&nbsp; EARTH DELAY 38 MIN &nbsp;·&nbsp; AUTONOMOUS OPS</div>',
+            f'<div style="text-align:center;padding-top:14px;color:{TEXT_D};font-size:0.72em;'
+            f'font-weight:600;letter-spacing:0.07em;">'
+            f'ASTERIA-7 &nbsp;·&nbsp; JUPITER APPROACH &nbsp;·&nbsp; '
+            f'EARTH DELAY 38 MIN &nbsp;·&nbsp; AUTONOMOUS OPS</div>',
             unsafe_allow_html=True,
         )
     with hc:
@@ -270,7 +280,10 @@ def main():
             badge = _badge("⚡ FAULT DETECTED", RED)
         else:
             badge = _badge("● ALL SYSTEMS NOMINAL", GREEN)
-        st.markdown(f'<div style="text-align:right;padding-top:12px;">{badge}</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="text-align:right;padding-top:14px;">{badge}</div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("---")
 
@@ -285,9 +298,11 @@ def main():
     )
 
 
-def _live_model(height: int = 490):
+def _live_model(height: int = 580):
     """Canvas satellite panel driven by the loopback telemetry feed."""
-    palette = {"BG": BG, "WHITE": WHITE, "BORDER": BORDER, "BORDER_S": BORDER_S,
+    # Use white as the panel BG so the satellite and readouts sit on a clean
+    # white surface that pops against the page's light blue-gray background.
+    palette = {"BG": WHITE, "WHITE": WHITE, "BORDER": BORDER, "BORDER_S": BORDER_S,
                "TEXT": TEXT, "TEXT_M": TEXT_M, "TEXT_D": TEXT_D,
                "GREEN": GREEN, "AMBER": AMBER, "RED": RED}
     components.html(
@@ -312,13 +327,16 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
     ]
     scols = st.columns(8)
     for i, (label, value, is_alert) in enumerate(sensors):
-        vc = RED if is_alert else TEXT
+        vc  = RED if is_alert else TEXT
+        bc  = f"{RED}55" if is_alert else BORDER
+        top = f"border-top:3px solid {RED};" if is_alert else f"border-top:3px solid {BORDER};"
         with scols[i]:
             st.markdown(
-                f'<div style="background:{WHITE};border:1px solid {BORDER};border-radius:8px;'
-                f'padding:8px 10px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
-                f'<div style="font-size:0.62em;font-weight:700;color:{TEXT_D};letter-spacing:0.08em;margin-bottom:3px;">{label.upper()}</div>'
-                f'<div style="font-size:0.9em;font-weight:700;color:{vc};font-family:monospace;">{value}</div>'
+                f'<div style="background:{WHITE};border:1px solid {bc};{top}border-radius:10px;'
+                f'padding:10px 6px;text-align:center;box-shadow:0 1px 5px rgba(0,0,0,0.06);">'
+                f'<div style="font-size:0.6em;font-weight:700;color:{TEXT_D};letter-spacing:0.09em;'
+                f'margin-bottom:5px;">{label.upper()}</div>'
+                f'<div style="font-size:1.0em;font-weight:700;color:{vc};font-family:ui-monospace,monospace;">{value}</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -339,13 +357,13 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
         )
         _fault_buttons(active_faults, "btn")
 
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-        _, mcol, _ = st.columns([1, 2.2, 1])
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        _, mcol, _ = st.columns([0.25, 3.5, 0.25])
         with mcol:
             _live_model()
             st.markdown(
-                f'<div style="text-align:center;color:{TEXT_D};font-size:0.78em;margin-top:-6px;">'
-                f'Select one or more faults above to see FDIR recovery and Gemma AI analysis in real time</div>',
+                f'<div style="text-align:center;color:{TEXT_D};font-size:0.76em;margin-top:2px;">'
+                f'Select one or more faults above to trigger FDIR recovery and Gemma AI analysis</div>',
                 unsafe_allow_html=True,
             )
 
@@ -367,7 +385,7 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
 
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
-        left_col, mid_col, right_col = st.columns([1.1, 1.55, 1.35])
+        left_col, mid_col, right_col = st.columns([1, 1.9, 1.3])
 
         # ── LEFT: FDIR (runs instantly, zero AI) ─────────────────────────────
         with left_col:
@@ -415,7 +433,7 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
         with mid_col:
             _section_label("SPACECRAFT STATE")
 
-            _live_model(height=390)
+            _live_model(height=480)
 
             # Subsystem health grid
             hcols = st.columns(3)

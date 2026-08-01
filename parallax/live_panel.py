@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-PANEL_HEIGHT = 490
+PANEL_HEIGHT = 580
 POLL_INTERVAL_MS = 50
 
 
