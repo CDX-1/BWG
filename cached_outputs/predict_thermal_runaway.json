@@ -1,0 +1,42 @@
+{
+  "current_assessment": "A thermal runaway event in the PCU thermal zone is in progress. Temperature has spiked to 71.2°C in the PCU, with heat spreading to the instrument bay (29.1°C) and bus (38.6°C). FDIR has activated emergency cooling and reduced computational load. Temperature is stabilising but remains well above nominal. All electronics are at elevated risk.",
+  "system_stability": "critical",
+  "predicted_failures": [
+    {
+      "subsystem": "Power",
+      "failure_mode": "PCU component thermal failure — complete power loss",
+      "estimated_time_to_failure": "45 minutes if temperature does not decrease below 65°C",
+      "probability": "high",
+      "early_warning_signs": ["PCU temp sustained above 68°C for >5 min", "Bus voltage instability", "PCU current limit events"]
+    },
+    {
+      "subsystem": "Science",
+      "failure_mode": "Spectrometer detector thermal damage — permanent degradation",
+      "estimated_time_to_failure": "2 hours if instrument bay exceeds 32°C",
+      "probability": "medium",
+      "early_warning_signs": ["Instrument bay temp above 26°C", "Spectrometer dark current increase"]
+    },
+    {
+      "subsystem": "ADCS",
+      "failure_mode": "Reaction wheel electronics thermal shutdown",
+      "estimated_time_to_failure": "3 hours",
+      "probability": "low",
+      "early_warning_signs": ["RW motor controller temp above 55°C", "RW speed fluctuations"]
+    }
+  ],
+  "cascading_risks": [
+    "PCU failure would immediately trigger full spacecraft power loss and emergency safe mode",
+    "Thermal damage to PCU may be irreversible — no backup thermal control path for this zone",
+    "Elevated instrument bay temperature risks permanent detector damage across all science instruments",
+    "If safe mode triggers, communications interrupted for minimum 4 hours during recovery"
+  ],
+  "recommended_actions": [
+    "IMMEDIATE: Power down all non-essential loads — target total draw below 280W",
+    "IMMEDIATE: Command spacecraft to deep-space pointing (away from sun) to maximise passive cooling",
+    "Suspend all science operations and power down instrument heaters immediately",
+    "Monitor PCU temperature every 30 seconds — autonomous safe mode trigger at 68°C",
+    "Prepare emergency uplink with revised thermal control parameters for next contact window"
+  ],
+  "earth_report": "EMERGENCY REPORT — ASTERIA-7 T+09:42\n\nFDIR EVENT: PCU thermal runaway detected. Temperature 71.2°C — 30°C above nominal.\n\nCURRENT STATUS: CRITICAL — thermal runaway in PCU zone with heat spreading to instrument bay. FDIR cooling response active. Temperature stabilising but not yet safe.\n\nPRIMARY RISK: PCU component thermal failure possible within 45 minutes if temperature does not decrease. Complete power loss would result.\n\nACTIONS TAKEN BY FDIR: Emergency thermal control activated, radiators deployed, computational load reduced 30%, instrument heaters disabled.\n\nGROUND RECOMMENDATIONS: (1) AUTHORISE EMERGENCY POWER REDUCTION TO 280W IMMEDIATELY. (2) Approve deep-space pointing attitude. (3) Prepare safe mode command sequence for autonomous uplink. (4) All available mission controllers to stations.\n\nMISSION IMPACT: CRITICAL. Immediate ground action required. Mission at risk.",
+  "confidence": "high"
+}

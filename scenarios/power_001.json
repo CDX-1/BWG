@@ -1,0 +1,58 @@
+{
+  "scenario_id": "power_001",
+  "mission": {
+    "spacecraft": "Asteria-7",
+    "phase": "Jupiter approach cruise",
+    "earth_delay_minutes": 38,
+    "transmission_budget_bytes": 25000
+  },
+  "event": {
+    "timestamp": "T+09:42:15",
+    "trigger": "solar array output drop",
+    "description": "Unclassified 35% solar array power drop with thermal anomaly in power conditioning unit"
+  },
+  "telemetry_summary": {
+    "solar_output_drop_percent": 35,
+    "pcu_temperature_rise_c": 8.2,
+    "battery_drain_rate_increase_percent": 22,
+    "attitude_error_arcsec": 3.1,
+    "bus_voltage_change_percent": 1.8
+  },
+  "recent_commands": [
+    "09:38:00 DEEP_SPACE_MANEUVER_COMPLETE",
+    "09:40:10 SET_SCIENCE_MODE CRUISE",
+    "09:41:55 SOLAR_ARRAY_TRACK_ENABLE"
+  ],
+  "available_evidence": [
+    {
+      "id": "solar_iv_curves",
+      "size_bytes": 12000,
+      "description": "Raw current-voltage curves from all solar panel segments T-5s to T+30s"
+    },
+    {
+      "id": "adcs_log",
+      "size_bytes": 5000,
+      "description": "Attitude and control system log including sun-pointing error and slew history"
+    },
+    {
+      "id": "pcu_thermal",
+      "size_bytes": 4000,
+      "description": "Power conditioning unit thermal telemetry at 10Hz"
+    },
+    {
+      "id": "battery_history",
+      "size_bytes": 2000,
+      "description": "Battery state-of-charge and discharge rate history from T-60s to T+60s"
+    },
+    {
+      "id": "comm_signal_log",
+      "size_bytes": 3000,
+      "description": "Communication link margin and signal quality log"
+    },
+    {
+      "id": "star_tracker_frames",
+      "size_bytes": 9000,
+      "description": "Star tracker image frames for independent attitude verification"
+    }
+  ]
+}

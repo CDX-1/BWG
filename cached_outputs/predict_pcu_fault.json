@@ -1,0 +1,42 @@
+{
+  "current_assessment": "PCU module B has failed. Backup PCU-A is now online and providing power to the bus. Bus voltage has restabilised at 27.6V. However, the backup PCU has not been operationally tested at full load and its thermal profile under sustained operation is not fully characterised. The spacecraft is operating on backup power conditioning with reduced margin and elevated risk.",
+  "system_stability": "critical",
+  "predicted_failures": [
+    {
+      "subsystem": "Power",
+      "failure_mode": "Backup PCU-A overload or thermal shutdown under full mission load",
+      "estimated_time_to_failure": "6-18 hours depending on load profile",
+      "probability": "medium",
+      "early_warning_signs": ["PCU-A temperature above 48°C", "Bus voltage ripple above 0.5V", "Current draw transients during attitude maneuvers"]
+    },
+    {
+      "subsystem": "Thermal",
+      "failure_mode": "Instrument bay temperature exceeding safe operating limit",
+      "estimated_time_to_failure": "3.5 hours without active cooling adjustment",
+      "probability": "high",
+      "early_warning_signs": ["Instrument temp above 24°C", "Radiator flow sensor anomaly", "Bus temp above 30°C"]
+    },
+    {
+      "subsystem": "Science",
+      "failure_mode": "Spectrometer thermal shutdown — detector sensitivity degraded",
+      "estimated_time_to_failure": "4 hours",
+      "probability": "medium",
+      "early_warning_signs": ["Instrument temp above 22°C", "Spectrometer dark count rate increase"]
+    }
+  ],
+  "cascading_risks": [
+    "Single-point failure in power conditioning — no further backup available",
+    "Elevated bus impedance on PCU-A may cause voltage sags during thruster firings",
+    "PCU failure during a communication window could interrupt critical downlink",
+    "Full power failure would trigger emergency safe mode, terminating all science and most housekeeping"
+  ],
+  "recommended_actions": [
+    "IMMEDIATE: Reduce total power draw to below 350W to reduce PCU-A thermal stress",
+    "Suspend all non-essential heaters and science instruments within 30 minutes",
+    "Monitor PCU-A temperature every 60 seconds — alert threshold 47°C",
+    "Pre-position spacecraft in sun-pointing attitude to maximise solar input and reduce battery dependence",
+    "Prepare safe mode entry sequence for autonomous trigger at PCU-A temp >50°C"
+  ],
+  "earth_report": "CRITICAL REPORT — ASTERIA-7 T+09:42\n\nFDIR EVENT: PCU module B electronics failure. Backup PCU-A activated. Bus restabilised.\n\nCURRENT STATUS: CRITICAL — single backup power conditioning unit in operation. No further redundancy available.\n\nPRIMARY RISK: PCU-A thermal failure under sustained load. Estimated 6-18 hour window before risk becomes acute. Instrument bay thermal rise also a near-term concern.\n\nACTIONS TAKEN BY FDIR: PCU-B isolated, PCU-A switched online, thermal load reduced, computational load shed 30%.\n\nGROUND RECOMMENDATIONS: (1) Authorise emergency power reduction below 350W immediately. (2) Evaluate mission abort criteria. (3) Prepare uplink for safe mode configuration. (4) Prioritise PCU-A status telemetry in all upcoming contact windows.\n\nMISSION IMPACT: Significant. Continued operation at risk. Recommend reducing mission phase to essential functions only.",
+  "confidence": "high"
+}

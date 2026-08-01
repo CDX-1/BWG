@@ -1,0 +1,35 @@
+{
+  "current_assessment": "High-gain antenna pointing actuator has failed, causing signal loss. FDIR has successfully acquired Earth via the low-gain backup antenna at reduced data rate (115 kbps vs 1.2 Mbps nominal). Communications are maintained but downlink capacity is reduced by 90%. The science data queue is accumulating faster than it can be transmitted.",
+  "system_stability": "degraded",
+  "predicted_failures": [
+    {
+      "subsystem": "Communications",
+      "failure_mode": "Downlink data queue overflow — science data permanently lost",
+      "estimated_time_to_failure": "6.3 hours at current science collection rate",
+      "probability": "high",
+      "early_warning_signs": ["Onboard storage above 85%", "Data queue depth increasing monotonically"]
+    },
+    {
+      "subsystem": "Communications",
+      "failure_mode": "LGA-2 thermal issue from sustained high-power operation",
+      "estimated_time_to_failure": "24-48 hours",
+      "probability": "low",
+      "early_warning_signs": ["LGA-2 amplifier temperature above 45°C", "Bit error rate increasing"]
+    }
+  ],
+  "cascading_risks": [
+    "90% reduction in downlink means FDIR anomaly reports and telemetry cannot be fully transmitted",
+    "Uplink command rate also reduced — ground cannot respond rapidly to evolving situations",
+    "Science data collected during LGA-only period may never reach Earth if storage fills",
+    "38-minute round-trip delay combined with slow uplink makes ground commanding impractical for time-critical events"
+  ],
+  "recommended_actions": [
+    "IMMEDIATE: Reduce science collection rate by 80% to match LGA downlink capacity",
+    "Prioritise FDIR logs and spacecraft health telemetry over science data in downlink queue",
+    "Attempt HGA actuator reset command sequence — success probability estimated 40%",
+    "Configure onboard data management to overwrite oldest low-priority science data if storage >90%",
+    "Pre-position spacecraft for Earth-pointing attitude to maximise LGA signal margin"
+  ],
+  "earth_report": "COMMS REPORT — ASTERIA-7 T+09:42\n\nFDIR EVENT: HGA pointing actuator failure. Signal loss on primary antenna. LGA-2 backup acquired Earth.\n\nCURRENT STATUS: Communications maintained at reduced capacity. Downlink 115 kbps (9.6% nominal). Uplink nominal via LGA.\n\nPRIMARY RISK: Onboard data storage will fill in approximately 6.3 hours at current science collection rate.\n\nACTIONS TAKEN BY FDIR: HGA isolated, LGA-2 activated, data rate reduced, downlink queue reprioritised.\n\nGROUND RECOMMENDATIONS: (1) Immediately reduce commanded science collection rate. (2) Attempt HGA actuator reset during next contact. (3) Prioritise spacecraft health telemetry in all contacts. (4) Evaluate mission plan with 115 kbps constraint.\n\nMISSION IMPACT: Significant data return reduction. All critical housekeeping maintained.",
+  "confidence": "high"
+}

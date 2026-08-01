@@ -37,3 +37,37 @@ class ParallaxAnalysis(BaseModel):
     compression_warning: str
     uncertainty_statement: str
     source_references: list[SourceReference] = []
+
+
+class FDIRActionModel(BaseModel):
+    timestamp: str
+    fault_id: str
+    phase: str
+    message: str
+    outcome: str
+
+
+class FDIRReportModel(BaseModel):
+    triggered: bool
+    active_faults: list[str]
+    actions: list[FDIRActionModel]
+    mission_safe: bool
+    summary: str
+
+
+class PredictedFailure(BaseModel):
+    subsystem: str
+    failure_mode: str
+    estimated_time_to_failure: str
+    probability: Literal["low", "medium", "high"]
+    early_warning_signs: list[str]
+
+
+class GemmaPredictiveAnalysis(BaseModel):
+    current_assessment: str
+    system_stability: Literal["stable", "degraded", "critical", "unknown"]
+    predicted_failures: list[PredictedFailure]
+    cascading_risks: list[str]
+    recommended_actions: list[str]
+    earth_report: str
+    confidence: Literal["low", "medium", "high"]

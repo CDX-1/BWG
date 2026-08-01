@@ -1,0 +1,42 @@
+{
+  "current_assessment": "Reaction wheel 2 bearing is degrading. RW-2 has been spun down and the spacecraft has transitioned to magnetic torquer attitude control. Pointing precision has degraded from 0.3 arcsec to approximately 4.2 arcsec. Sun-pointing error has increased to 0.42°, reducing solar input by approximately 12%. Fine science pointing is currently unavailable.",
+  "system_stability": "degraded",
+  "predicted_failures": [
+    {
+      "subsystem": "ADCS",
+      "failure_mode": "Magnetic torquer saturation — attitude control authority loss",
+      "estimated_time_to_failure": "14-24 hours near Jupiter magnetic field gradient",
+      "probability": "medium",
+      "early_warning_signs": ["Torquer duty cycle above 85%", "Attitude error above 8 arcsec", "Residual angular momentum accumulating"]
+    },
+    {
+      "subsystem": "Power",
+      "failure_mode": "Solar input reduction from sustained off-sun pointing causing battery depletion",
+      "estimated_time_to_failure": "8.5 hours at current 12% solar reduction",
+      "probability": "medium",
+      "early_warning_signs": ["Battery SoC below 88%", "Solar output sustained below 760W"]
+    },
+    {
+      "subsystem": "Science",
+      "failure_mode": "Science observations unusable due to pointing instability",
+      "estimated_time_to_failure": "Already degraded — effective immediately",
+      "probability": "high",
+      "early_warning_signs": ["Image smear in camera frames", "Spectrometer spatial resolution below threshold"]
+    }
+  ],
+  "cascading_risks": [
+    "Poor sun-pointing compounds power margin already stressed by RW power draw changes",
+    "Magnetic torquer authority insufficient for large attitude maneuvers near Jupiter",
+    "RW-2 mechanical failure (seizure) could generate debris or vibration affecting other wheels",
+    "Reduced pointing precision affects HGA tracking, potentially degrading comms link"
+  ],
+  "recommended_actions": [
+    "Command RW-2 full spin-down and lock immediately to prevent seizure",
+    "Bias attitude to best available sun-pointing using RW 1, 3, 4 plus magnetic torquers",
+    "Suspend high-precision science observations until RW redundancy restored",
+    "Increase solar array tracking frequency to compensate for reduced pointing precision",
+    "Upload updated attitude control gains optimised for 3-wheel plus torquer configuration"
+  ],
+  "earth_report": "PRIORITY REPORT — ASTERIA-7 T+09:42\n\nFDIR EVENT: Reaction wheel 2 bearing degradation detected. RW-2 spun down. Magnetic torquer backup engaged.\n\nCURRENT STATUS: Degraded attitude control. Pointing precision reduced from 0.3 to 4.2 arcsec. Solar input reduced 12% due to off-sun pointing.\n\nPRIMARY RISK: Magnetic torquer saturation possible in 14-24 hours in current magnetic field environment. Solar power margin reduced.\n\nACTIONS TAKEN BY FDIR: RW-2 isolated, magnetic torquer mode engaged, attitude stabilised at degraded precision.\n\nGROUND RECOMMENDATIONS: (1) Upload 3-wheel attitude control parameters within next contact window. (2) Suspend precision science for minimum 48 hours. (3) Evaluate RW-2 reactivation feasibility after 4-hour cooldown.\n\nMISSION IMPACT: Science collection suspended. Power margin reduced. No immediate safety risk.",
+  "confidence": "medium"
+}

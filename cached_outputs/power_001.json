@@ -1,0 +1,79 @@
+{
+  "event_summary": "At mission time T+09:42:15, Asteria-7 recorded a 35% drop in solar array output during Jupiter approach cruise, coinciding with an 8.2°C thermal spike in the power conditioning unit, a 22% increase in battery drain rate, and a 3.1 arcsec attitude error. The event occurred 20 seconds after solar array tracking was re-enabled following a deep-space maneuver. No single hypothesis fully accounts for all observed symptoms simultaneously.",
+  "resolution_status": "unresolved",
+  "hypotheses": [
+    {
+      "name": "Micrometeor strike on solar array",
+      "confidence": "medium",
+      "supporting_evidence": ["solar_iv_curves", "battery_history"],
+      "contradicting_evidence": ["adcs_log"],
+      "evidence_needed": ["solar_iv_curves", "star_tracker_frames"]
+    },
+    {
+      "name": "Power conditioning unit electronics fault",
+      "confidence": "medium",
+      "supporting_evidence": ["pcu_thermal", "battery_history"],
+      "contradicting_evidence": ["solar_iv_curves"],
+      "evidence_needed": ["pcu_thermal", "solar_iv_curves"]
+    },
+    {
+      "name": "Attitude control drift causing off-sun pointing",
+      "confidence": "low",
+      "supporting_evidence": ["adcs_log", "solar_iv_curves"],
+      "contradicting_evidence": ["pcu_thermal"],
+      "evidence_needed": ["adcs_log", "star_tracker_frames"]
+    }
+  ],
+  "preservation_priorities": [
+    {
+      "evidence_id": "solar_iv_curves",
+      "priority": 5,
+      "reason": "Primary instrument record. Segment-level I-V curves can distinguish a physically damaged panel (degraded fill factor) from a shadowing or pointing error (uniform output reduction). This distinction cannot be made from any other evidence item. Temporal resolution must be preserved — averaging will remove the onset signature.",
+      "supports_hypotheses": ["Micrometeor strike on solar array", "Power conditioning unit electronics fault", "Attitude control drift causing off-sun pointing"],
+      "consequence_if_lost": "Investigators cannot determine whether the power loss is localised to specific panel segments or uniform across the array. All three hypotheses remain unresolvable from telemetry alone."
+    },
+    {
+      "evidence_id": "adcs_log",
+      "priority": 5,
+      "reason": "Essential to rule out the attitude drift hypothesis. Sun-pointing error history and slew records around the SOLAR_ARRAY_TRACK_ENABLE command will either confirm or eliminate off-sun pointing as a cause. Without this, investigators cannot assess whether the array was correctly oriented at the time of the drop.",
+      "supports_hypotheses": ["Attitude control drift causing off-sun pointing"],
+      "consequence_if_lost": "Cannot assess spacecraft orientation at event time. The attitude drift hypothesis remains permanently open even if physically unlikely."
+    },
+    {
+      "evidence_id": "pcu_thermal",
+      "priority": 4,
+      "reason": "The 8.2°C PCU temperature spike is a key discriminator between a panel fault and a conditioning unit fault. Raw 10Hz thermal data preserves the onset rate and spatial distribution across the PCU. A summarised temperature reading cannot support causal analysis.",
+      "supports_hypotheses": ["Power conditioning unit electronics fault"],
+      "consequence_if_lost": "Cannot assess whether thermal signature is consistent with a PCU component failure or a downstream response to reduced input power. Electronics fault hypothesis becomes untestable."
+    },
+    {
+      "evidence_id": "battery_history",
+      "priority": 3,
+      "reason": "Discharge rate history provides a ground-truth record of actual power deficit over time, independent of the sensor being investigated. Supports both the strike and PCU fault hypotheses and helps bound the severity of the power loss.",
+      "supports_hypotheses": ["Micrometeor strike on solar array", "Power conditioning unit electronics fault"],
+      "consequence_if_lost": "Lose independent confirmation of power deficit magnitude. Manageable if solar_iv_curves is preserved, but reduces confidence in all quantitative estimates."
+    },
+    {
+      "evidence_id": "comm_signal_log",
+      "priority": 2,
+      "reason": "Link margin reduction may indicate attitude deviation or power-related transmitter degradation. Supporting evidence only — does not independently test any primary hypothesis but adds context to the attitude drift scenario.",
+      "supports_hypotheses": ["Attitude control drift causing off-sun pointing"],
+      "consequence_if_lost": "Lose one corroborating data point. Acceptable loss if adcs_log is preserved."
+    },
+    {
+      "evidence_id": "star_tracker_frames",
+      "priority": 1,
+      "reason": "Provides independent attitude verification but is large and the information is partially redundant with the adcs_log. If adcs_log is preserved, star tracker frames add confirmation but are not the primary investigative record.",
+      "supports_hypotheses": ["Attitude control drift causing off-sun pointing"],
+      "consequence_if_lost": "Lose independent attitude verification. Acceptable if adcs_log is intact, as star tracker frames would be corroborating rather than primary evidence."
+    }
+  ],
+  "recommended_follow_up": "Command a diagnostic panel sweep at reduced power draw: individually gate each solar array string and measure output in isolation to localise any physical damage. Cross-reference with micrometeoroid flux models for the current trajectory segment.",
+  "compression_warning": "The solar I-V curves must not be averaged or summarised before transmission. Segment-level resolution is required to distinguish localised damage from a uniform pointing-induced reduction. Any compression that collapses per-segment readings into an array total will permanently destroy the discriminating information. PCU thermal data at 10Hz must similarly be preserved at full resolution — the onset rate is diagnostically significant.",
+  "uncertainty_statement": "This power anomaly cannot be conclusively attributed to any single cause. A micrometeor strike, a PCU electronics fault, and an attitude control failure are all consistent with subsets of the observed telemetry. The evidence capsule is constructed to preserve independent investigative paths for each. Do not treat any explanation as confirmed until segment-level solar data has been reviewed on the ground.",
+  "source_references": [
+    {"source_id": "spectrometer_manual", "relevance": "Temporal averaging warning applied to solar I-V curve data analogously"},
+    {"source_id": "incident_response", "relevance": "Priority preservation order and multi-path investigative requirement"},
+    {"source_id": "compression_risks", "relevance": "Risk of collapsing segment-level data into array totals"}
+  ]
+}

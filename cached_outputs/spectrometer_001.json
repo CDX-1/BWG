@@ -1,117 +1,81 @@
 {
-  "event_summary": "Unclassified 1.8-second spectral transient at T+04:17:32 coinciding with a 41% increase in radiation counter readings and 2 checksum errors.",
+  "event_summary": "At mission time T+04:17:32, Asteria-7 recorded an 8.7-sigma spectrometer transient lasting approximately 1.8 seconds during the Europa flyby science pass. The event is concurrent with a 41% increase in radiation counter readings, a 0.8°C instrument temperature rise, and 2 packet checksum errors. The spacecraft was operating in HIGH compression mode, activated 102 seconds before the event. No single hypothesis fully explains the combined sensor pattern.",
   "resolution_status": "unresolved",
   "hypotheses": [
     {
-      "name": "External Radiation Event",
+      "name": "External radiation event",
       "confidence": "medium",
-      "supporting_evidence": [
-        "radiation_window"
-      ],
-      "contradicting_evidence": [],
-      "evidence_needed": [
-        "raw_spectrum",
-        "radiation_window"
-      ]
+      "supporting_evidence": ["raw_spectrum", "radiation_window"],
+      "contradicting_evidence": ["packet_checksums"],
+      "evidence_needed": ["radiation_window", "raw_spectrum"]
     },
     {
-      "name": "Single-Event Upset (SEU)",
-      "confidence": "medium",
-      "supporting_evidence": [
-        "raw_spectrum",
-        "radiation_window"
-      ],
-      "contradicting_evidence": [],
-      "evidence_needed": [
-        "raw_spectrum",
-        "radiation_window"
-      ]
-    },
-    {
-      "name": "Data Corruption/Software Error",
+      "name": "Spectrometer electronics fault",
       "confidence": "low",
-      "supporting_evidence": [
-        "packet_checksums"
-      ],
-      "contradicting_evidence": [
-        "radiation_window"
-      ],
-      "evidence_needed": [
-        "packet_checksums"
-      ]
+      "supporting_evidence": ["thermal_window", "power_window"],
+      "contradicting_evidence": ["radiation_window"],
+      "evidence_needed": ["thermal_window", "raw_spectrum"]
+    },
+    {
+      "name": "Packet corruption or data transmission error",
+      "confidence": "low",
+      "supporting_evidence": ["packet_checksums"],
+      "contradicting_evidence": ["radiation_window", "raw_spectrum"],
+      "evidence_needed": ["packet_checksums", "raw_spectrum"]
     }
   ],
   "preservation_priorities": [
     {
       "evidence_id": "raw_spectrum",
-      "priority": 1,
-      "reason": "Primary instrument data required to analyze the nature of the transient.",
-      "supports_hypotheses": [
-        "External Radiation Event",
-        "Single-Event Upset (SEU)",
-        "Data Corruption/Software Error"
-      ],
-      "consequence_if_lost": "Loss of primary spectral evidence prevents distinguishing between a real event and an SEU."
+      "priority": 5,
+      "reason": "Primary instrument data. Preserves the temporal and spectral shape of the transient required by all three investigative paths. Averaging or compression will destroy asymmetry and secondary pulse structure referenced in SPECTROMETER-MANUAL §3.2.",
+      "supports_hypotheses": ["External radiation event", "Spectrometer electronics fault", "Packet corruption or data transmission error"],
+      "consequence_if_lost": "Investigators cannot perform spectral analysis of the event. All three hypotheses become untestable from direct measurement."
     },
     {
       "evidence_id": "radiation_window",
-      "priority": 2,
-      "reason": "Necessary to establish temporal correlation with the spectrometer transient.",
-      "supports_hypotheses": [
-        "External Radiation Event",
-        "Single-Event Upset (SEU)"
-      ],
-      "consequence_if_lost": "Unable to confirm if the radiation increase was concurrent or coincident noise."
+      "priority": 5,
+      "reason": "Required to test the external radiation hypothesis and to contradict the fault hypothesis. Temporal resolution must be preserved to establish cross-sensor correlation with the spectrometer. Averaging destroys the sub-second timing referenced in RADIATION-EVENTS §3.1.",
+      "supports_hypotheses": ["External radiation event"],
+      "consequence_if_lost": "Cannot confirm or rule out an external particle event. The most scientifically significant hypothesis becomes permanently untestable."
     },
     {
       "evidence_id": "packet_checksums",
-      "priority": 3,
-      "reason": "Provides evidence of data integrity issues coinciding with the event.",
-      "supports_hypotheses": [
-        "Data Corruption/Software Error"
-      ],
-      "consequence_if_lost": "Unable to determine if checksum errors are related to the transient or unrelated noise."
-    },
-    {
-      "evidence_id": "power_window",
       "priority": 4,
-      "reason": "Used to rule out bus voltage fluctuations as a cause for the transient.",
-      "supports_hypotheses": [
-        "Data Corruption/Software Error"
-      ],
-      "consequence_if_lost": "Loss of ability to rule out power-induced instrument glitches."
+      "reason": "Small but irreplaceable. Determines whether measured anomalies are real or data corruption artifacts. The two observed checksum errors near the event must be assessed against specific packet boundaries. PACKET-INTEGRITY §3.5 notes this log cannot be reconstructed.",
+      "supports_hypotheses": ["Packet corruption or data transmission error"],
+      "consequence_if_lost": "Cannot rule out data corruption as the source of the anomaly. The entire investigation may be built on corrupted measurements."
     },
     {
       "evidence_id": "thermal_window",
-      "priority": 5,
-      "reason": "Secondary environmental context.",
-      "supports_hypotheses": [],
-      "consequence_if_lost": "Minimal impact on primary hypothesis differentiation."
+      "priority": 3,
+      "reason": "Tests the electronics fault hypothesis. The 0.8°C temperature rise is within the range that can produce gain shifts in the spectrometer array per SPECTROMETER-MANUAL §5.7. Required to assess whether the transient is a thermal artifact.",
+      "supports_hypotheses": ["Spectrometer electronics fault"],
+      "consequence_if_lost": "Cannot assess thermal contribution to the measured transient. Electronics fault hypothesis remains neither confirmed nor excluded."
+    },
+    {
+      "evidence_id": "power_window",
+      "priority": 2,
+      "reason": "Bus voltage change is nominal (0.3%) which slightly argues against a power-induced fault. Useful corroborating evidence but not essential if bandwidth is exhausted.",
+      "supports_hypotheses": ["Spectrometer electronics fault"],
+      "consequence_if_lost": "Lose one corroborating data point for fault analysis. Acceptable loss if budget requires it."
+    },
+    {
+      "evidence_id": "camera_thumbnail",
+      "priority": 1,
+      "reason": "Provides environmental context but no direct evidence for any hypothesis. The thumbnail is the largest evidence item and contributes least to distinguishing between the three explanations. Should be deprioritized under bandwidth constraints.",
+      "supports_hypotheses": ["External radiation event"],
+      "consequence_if_lost": "Lose visual environmental context. Does not affect the ability to test any of the three primary hypotheses."
     }
   ],
-  "recommended_follow_up": "Perform a spectrometer calibration check to ensure no permanent degradation occurred following the transient.",
-  "compression_warning": "The command SET_COMPRESSION_MODE HIGH was issued shortly before the event. Temporal averaging or lossy compression of the radiation_window will destroy sub-second timing information, making it impossible to establish the 0-200ms lead time required to confirm a genuine external radiation event.",
-  "uncertainty_statement": "It is currently undetermined whether the spectral transient was caused by a physical external particle event, an internal SEU in the ADC, or data corruption indicated by the checksum errors. Temporal correlation between the spectrometer and radiation counter is required for differentiation.",
+  "recommended_follow_up": "Schedule a repeat spectrometer observation during a quieter magnetospheric phase with compression mode set to LOW and all correlated instruments recording at maximum sample rate. Cross-reference with Europa magnetospheric models for the flyby geometry at T+04:17:32.",
+  "compression_warning": "HIGH compression mode was active during the event. The raw spectrum and radiation window must not be re-compressed before transmission. Applying additional compression to already-compressed data risks cascading information loss. The packet integrity log must be transmitted without any summarization — the error count alone is insufficient for investigation.",
+  "uncertainty_statement": "This event cannot be conclusively classified with the available summary telemetry. All three hypotheses — external radiation event, electronics fault, and data corruption — remain viable. The evidence capsule is constructed to preserve the investigative capacity to test each explanation independently. Do not treat any hypothesis as confirmed.",
   "source_references": [
-    {
-      "source_id": "SPECTROMETER-MANUAL §2.3",
-      "relevance": "Identifies ADC susceptibility to SEUs producing spurious spikes."
-    },
-    {
-      "source_id": "RADIATION-EVENTS §3.3",
-      "relevance": "Links 41% radiation increase to external particle events."
-    },
-    {
-      "source_id": "COMPRESSION-RISKS §2.1",
-      "relevance": "Warns against temporal averaging of radiation data."
-    },
-    {
-      "source_id": "RADIATION-EVENTS §2.1",
-      "relevance": "Defines the 0-200ms temporal offset for genuine radiation events."
-    },
-    {
-      "source_id": "INCIDENT-RESPONSE §2.1",
-      "relevance": "Provides priority order for evidence preservation."
-    }
+    {"source_id": "spectrometer_manual", "relevance": "Temporal averaging warning for short transients; thermal gain shift coefficients"},
+    {"source_id": "radiation_events", "relevance": "Magnetospheric event duration classification; cross-sensor correlation requirements"},
+    {"source_id": "packet_integrity", "relevance": "Compression mode artifact risk; checksum log irreplaceability"},
+    {"source_id": "compression_risks", "relevance": "HIGH compression mode context; re-compression cascade risk"},
+    {"source_id": "incident_response", "relevance": "Priority preservation order; uncertainty statement requirement"}
   ]
 }

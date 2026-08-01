@@ -1,0 +1,42 @@
+{
+  "current_assessment": "Solar array string 2 has failed open-circuit, reducing available power by 35%. FDIR has successfully activated battery conservation mode and adjusted array angle. Power budget is stable at 68% nominal but margin is thin. Battery is slowly discharging at approximately 0.8% per hour above nominal draw. The spacecraft is operational but in a degraded power state.",
+  "system_stability": "degraded",
+  "predicted_failures": [
+    {
+      "subsystem": "Power",
+      "failure_mode": "Battery state-of-charge depletion below safe threshold",
+      "estimated_time_to_failure": "4.2 hours at current discharge rate",
+      "probability": "high",
+      "early_warning_signs": ["Battery SoC below 85%", "Power draw exceeding 580W", "Bus voltage dipping below 27.5V"]
+    },
+    {
+      "subsystem": "Science",
+      "failure_mode": "Spectrometer forced shutdown due to load shedding",
+      "estimated_time_to_failure": "2.1 hours if no further power reduction",
+      "probability": "medium",
+      "early_warning_signs": ["Power draw above 550W for >30 min", "Automatic load shed sequence activated"]
+    },
+    {
+      "subsystem": "ADCS",
+      "failure_mode": "Reaction wheel desaturation burn delayed — attitude drift accumulating",
+      "estimated_time_to_failure": "8 hours",
+      "probability": "low",
+      "early_warning_signs": ["RW speed approaching 4200 rpm on any axis", "Attitude error above 2 arcsec"]
+    }
+  ],
+  "cascading_risks": [
+    "Reduced power margin leaves no headroom for emergency maneuvers",
+    "Battery depletion could trigger emergency safe mode, suspending all science",
+    "Off-optimal array angle correction may stress the drive mechanism",
+    "Thermal control heaters may be shed in next power reduction cycle, risking instrument temperature"
+  ],
+  "recommended_actions": [
+    "Reduce spectrometer duty cycle to 50% immediately to extend power margin by ~1.8 hours",
+    "Defer scheduled trajectory correction maneuver by minimum 6 hours until power budget assessed",
+    "Enable battery trickle monitoring — trigger safe mode at 75% SoC rather than default 60%",
+    "Command attitude control to sun-pointing bias +1.8° to maximise remaining array output",
+    "Transmit priority downlink of solar telemetry within next 45-minute contact window"
+  ],
+  "earth_report": "PRIORITY REPORT — ASTERIA-7 T+09:42\n\nFDIR EVENT: Solar array string 2 open-circuit fault confirmed. String isolated. Recovery actions executed.\n\nCURRENT STATUS: Spacecraft operational in degraded power mode. Available power 68% nominal. Battery discharging at elevated rate. Mission-critical functions maintained.\n\nPRIMARY RISK: Battery SoC depletion estimated in 4.2 hours without intervention. Recommend immediate science power reduction.\n\nACTIONS TAKEN BY FDIR: Conservation mode active, array angle adjusted, science power reduced 40%.\n\nGROUND RECOMMENDATIONS: (1) Approve further science load reduction. (2) Delay TCM-7. (3) Increase contact window priority for next 12 hours.\n\nMISSION IMPACT: Science data collection reduced. No safety risk if power recommendations followed.",
+  "confidence": "high"
+}

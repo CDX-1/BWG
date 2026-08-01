@@ -1,0 +1,34 @@
+{
+  "current_assessment": "The science spectrometer detector array has failed and is unresponsive to restart commands. The instrument has been placed in safe mode. Camera and radiation sensor remain operational. The primary science instrument for this Europa flyby phase is unavailable. This is a significant mission impact but not a spacecraft safety concern.",
+  "system_stability": "degraded",
+  "predicted_failures": [
+    {
+      "subsystem": "Science",
+      "failure_mode": "Camera detector degradation from unshielded radiation exposure (spectrometer normally provides shielding)",
+      "estimated_time_to_failure": "72 hours in current radiation environment",
+      "probability": "low",
+      "early_warning_signs": ["Camera dark frame noise floor increase", "Hot pixel count above 0.1% of array"]
+    },
+    {
+      "subsystem": "Power",
+      "failure_mode": "Spectrometer power regulator fault spreading to instrument power bus",
+      "estimated_time_to_failure": "Unknown — dependent on root cause",
+      "probability": "low",
+      "early_warning_signs": ["Instrument power bus voltage fluctuation", "Other instruments reporting intermittent power"]
+    }
+  ],
+  "cascading_risks": [
+    "Primary science objective for Europa flyby is unachievable without spectrometer",
+    "Spectrometer power regulator fault may indicate wider instrument bus issue",
+    "Safe mode power cycling may have corrupted science data buffer — data recovery uncertain"
+  ],
+  "recommended_actions": [
+    "Attempt cold restart after 4-hour thermal stabilisation period",
+    "Redirect camera to capture contextual imaging of spectrometer target regions as partial mitigation",
+    "Increase radiation sensor sampling rate to 10Hz to partially compensate for lost spectral data",
+    "Preserve all spectrometer memory dumps for ground analysis of failure mode",
+    "Assess whether remaining flyby objectives can be partially achieved with camera and radiation data alone"
+  ],
+  "earth_report": "SCIENCE REPORT — ASTERIA-7 T+09:42\n\nFDIR EVENT: Spectrometer detector array failure. Instrument unresponsive. Placed in safe mode.\n\nCURRENT STATUS: Primary science instrument OFFLINE. Spacecraft health nominal. Camera and radiation sensor operational.\n\nPRIMARY RISK: Europa flyby primary science objective unachievable in current configuration. Cold restart to be attempted after 4-hour cooldown.\n\nACTIONS TAKEN BY FDIR: Power cycle attempted, buffers flushed, instrument safe mode activated.\n\nGROUND RECOMMENDATIONS: (1) Authorise cold restart attempt at T+4h. (2) Approve revised flyby science plan using camera + radiation sensor. (3) Request failure mode analysis from instrument team.\n\nMISSION IMPACT: Primary science collection lost for this flyby. Spacecraft safe. Recovery possible.",
+  "confidence": "high"
+}
