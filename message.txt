@@ -1,0 +1,203 @@
+Architecture plan · Track 2, Trajectory & Orbit
+Making Gemma the flight computer, not the commentator
+PARALLAX today calls one model, once, after the fact, and ignores what it says. This plan turns Gemma into a five-role reasoning stack that watches real 50 Hz telemetry, argues with itself, and issues recovery plans that actually change the spacecraft — measured at 3.9 seconds end to end, on the remote endpoint you already have.
+
+01
+What I verified first
+Two of these change the shape of the plan, so they come before the architecture rather than buried in a risks section at the end.
+
+Smallest call latency
+0.11 s
+A one-word classification round-trips in a tenth of a second. Latency is bound by output tokens, not the network — the 9.5 s you see today is the 1,200-token JSON response, not the endpoint.
+Full 5-tier stack
+3.9 s
+Dependency-parallelised, measured end to end. Faster than the single call running now. Five concurrent requests complete in 0.19 s wall — real parallelism, no queueing.
+Vision + JSON mode
+Both work
+Gemma read a real gyro chart correctly in both directions — found the disturbance window, and said "no" on a quiet control. response_format: json_object returns clean unfenced JSON.
+Context window
+32,768
+Hard cap. A full-size chart PNG blew past it at ~51k tokens; downscaled to a 20 kB JPEG it costs ~302. Featurize telemetry, never dump the raw 3,000-sample buffer.
+Real telemetry already flowing
+50 Hz
+3,000-sample buffer, ~60 s of genuine time series from the board. Gemma currently receives none of it.
+Gemma models on the endpoint
+1 of 44
+spur-gemma4 is the only Gemma; the rest are Qwen, Claude, GPT, DeepSeek, Phi. Tiering is therefore by role, not by parameter count.
+Verdict on staying remote
+Yes — go cloud-only and drop the local tier entirely. Every capability the architecture needed is present on spur-gemma4: sub-second small calls, true concurrency, native JSON mode, working vision, and bit-identical output at temperature 0 across repeated runs, which is what makes the adjudicator reproducible. The 3.6 GB of free disk that was going to cap the local sentinel stops mattering.
+
+The discovery that matters most
+PARALLAX_PROJECT_SUMMARY.md describes a different, sharper system than the one running: an evidence-preservation assistant that refuses to diagnose, keeps competing hypotheses alive, and packs a bandwidth-limited capsule for Earth. That design is substantially already written — capsule.py holds a working 0/1 knapsack solver, retrieval.py holds TF-IDF RAG over five real procedure documents, detector.py and baseline.py exist. None of it is imported by anything. The strongest version of this project reunites that thesis with the FDIR dashboard and the hardware, instead of building something new.
+
+02
+The stack
+Five roles, each mapped to a stage of the fault-management loop the deterministic system already has — detect, isolate, recover — plus the preserve stage that is PARALLAX's own contribution. Each role has to earn its slot by doing something the deterministic layer provably cannot.
+
+anomaly window
+
+hard trip
+
+approved
+
+vetoed
+
+Board · 50 Hz IMU + range
+
+Feature extractordeterministic windows
+
+Spacecraft sim state
+
+G0 SENTINELcontinuous watch
+
+G1 DIAGNOSTICIANcompeting hypotheses
+
+Threshold rulesexisting FDIR detect
+
+G2 FLIGHT DIRECTORrecovery plan
+
+knowledge/ proceduresTF-IDF retrieval
+
+G3 ADJUDICATORred-teams the plan
+
+Deterministic validatorschema · whitelist · envelope
+
+Apply to statere-run FDIR
+
+Before / after delta
+
+G4 ARCHIVISTevidence capsule
+
+capsule.py knapsackvs naive baseline
+
+Tier	Job	What it beats	Measured
+G0
+SENTINEL	
+Continuous anomaly watch
+Reads featurized windows of the live stream. Emits nominal / watch / anomalous plus what looks odd, every few seconds.	Thresholds fire per-signal. Correlated drift across signals — none individually out of limits — is exactly what they miss.	0.11 s
+2 out-tokens
+G1
+DIAGNOSTICIAN	
+Isolation with uncertainty preserved
+Produces 2–4 competing explanations with supporting and contradicting evidence, each with confidence — never a single collapsed answer.	The isolation strings in FAULT_ISOLATION are hardcoded and always assert one cause with total certainty.	2.66 s
+210 out-tokens
+G2
+FLIGHT DIRECTOR	
+Recovery planning + conflict arbitration
+Emits a structured plan over a whitelisted action vocabulary, sequenced, with a stated resource budget.	With two faults active, FAULT_RECOVERY concatenates both scripts — thermal sheds load while comms boosts transmit power. Nothing notices.	0.63 s
+43 out-tokens
+G3
+ADJUDICATOR	
+Red-teams G2 before anything executes
+Separate call, separate prompt, no memory of G2's reasoning. Checks each step against telemetry and procedure text. Approve or veto with cause.	Nothing currently checks model output. A live run returned basic_fix_success_pct: 0 and the UI rendered it as a bar.	0.50 s
+temp 0, reproducible
+G4
+ARCHIVIST	
+What survives the downlink
+Scores each available record for preservation value against the surviving hypotheses; capsule.py then solves the knapsack under the byte budget.	The naive baseline (smallest-files-first) fits more records and preserves fewer answerable questions. That gap is the demo.	0.43 s
+27 out-tokens
+On "different layers of Gemma models"
+With one Gemma on the endpoint, the layers differ by role, not parameter count: each tier is its own prompt, temperature, context scope, output cap and stop condition, and each is independently validated and independently able to fail back. That is a real pipeline — G3 catches G2's mistakes precisely because it runs cold, at temperature 0, with no sight of G2's reasoning.
+
+Describe it as a multi-stage Gemma pipeline rather than a model-size hierarchy. The measured numbers back it up: the whole stack costs less wall-clock than the one call it replaces. Claiming a size hierarchy you did not ship is the only way this becomes a weakness.
+
+03
+The rule that makes it safe to let Gemma drive
+Your own §7 Responsibility Boundaries says Gemma must not directly control the spacecraft. That is the right call and this plan keeps it. The resolution is that Gemma decides, and a deterministic layer executes.
+
+G2 never emits a command. It emits a plan in a closed vocabulary — shed_load(pct), switch_to(pcu_a), slew_to_sun(), enter_safe_mode(), suspend_science() — which then passes three deterministic gates before touching anything: schema validation, whitelist membership, and a safety envelope check (no step that drives battery below 40 %, no step that severs the only remaining comms path). A rejected plan is shown to the operator with the failing gate named, which is a better demo than a plan that silently works.
+
+This is what converts the panel that currently reads "EXECUTE: Load Shedding Protocol" and does nothing into a system where the state visibly changes, FDIR re-runs against the new state, and the before/after delta is on screen.
+
+04
+Three fixes that make the claims true
+Feed it real trends, not a snapshot
+The prompt asks Gemma to "predict the NEXT most likely failure based on sensor trends" and then sends 29 scalars and a clock stuck at zero. Deterministically featurize the 50 Hz buffer over 5 s / 30 s / 60 s windows — slope, min, max, variance, threshold crossings, cross-signal correlation — and send those. Cheap in tokens, and it makes the prediction falsifiable. It also means you can physically create an anomaly by tilting or spinning the board and watch the stack respond to something real.
+
+Ground it in the procedures you already wrote
+retrieval.py is finished and unused. Wire load_knowledge_chunks() and retrieve() into G1 and G2, and require every hypothesis and every plan step to cite a section tag such as [INCIDENT-RESPONSE §2.1]. Uncited claims get flagged by G3. This is the single cheapest change with the most visible effect on output quality, and it is what the track means by RAG.
+
+Use the vision capability — confirmed working
+Track 2 explicitly asks for multimodal tools, and I verified spur-gemma4 reads images. Handed a real gyro chart it answered "yes, a disturbance event is present between approximately −16 and −8 seconds ago" — correct — and on a quiet control chart with no event it answered "no, there is no disturbance event present." It is right in both directions, which is the test that matters; a model that says "yes" to everything is worse than no model.
+
+Cost is ~302 tokens and ~0.4 s once the chart is downscaled to a 20 kB JPEG. Pass it to G1 alongside the numbers: a human flight controller reads the plot, not the CSV.
+
+05
+Proving it beats the baseline
+A demo that only shows the Gemma path proves nothing. Build a small harness that runs N fixed scenarios through both FDIR alone and FDIR + the stack, and put the table on screen. Suggested metrics, all measurable:
+
+Conflicting-recovery detection. Of the compound faults whose scripted recoveries contradict each other, how many were caught? Deterministic FDIR scores zero by construction.
+Hypotheses still investigable after downlink. Your §14 metric — capsule vs. smallest-files-first baseline, at the same byte budget.
+Unsafe plans blocked. How many G2 plans did G3 or the validator stop, and for what reason.
+Time to first actionable decision, against the 38-minute Earth round trip that makes onboard autonomy necessary at all.
+Include the failures. A stack that shows "G3 vetoed 2 of 9 plans" is far more credible than one claiming a clean sweep.
+
+06
+Build order
+Ordered by leverage, so you can stop at any phase and still have something coherent. Each phase leaves the app in a demoable state.
+
+P0
+Close the loop highest leverage
+Action vocabulary, JSON plan schema, the three deterministic gates, apply-to-state, re-run FDIR, before/after delta panel. G2 and the validator only — no new tiers yet.
+
+Ships: Gemma's decisions visibly change the spacecraft.
+
+P1
+Real telemetry into the prompt
+Window featurizer over the 50 Hz buffer, wired into the existing predictive call. Start advancing mission_time_s.
+
+Ships: trend claims become honest and hardware-driven.
+
+P2
+Split G1 and G3 out of the single call
+Diagnostician emits competing hypotheses; Adjudicator red-teams the plan with a cold, zero-temperature prompt. Wire in TF-IDF retrieval and require citations.
+
+Ships: uncertainty preserved, output grounded, model output checked.
+
+P3
+Continuous sentinel cheaper than expected
+G0 polls the featurized live window on a timer — 0.11 s per call means once or twice a second is affordable. A small always-on verdict strip in the hardware tab, with a rolling history of its calls.
+
+Ships: a model watching the stream continuously, not just on a button press.
+
+P4
+Reunite the evidence capsule
+G4 scoring into the existing capsule.py knapsack, side by side with the naive baseline, under an operator-set byte budget.
+
+Ships: the original PARALLAX thesis, and your clearest differentiator.
+
+P5
+Benchmark + vision
+Scenario harness with the comparison table; pass rendered charts to G1 as images.
+
+Ships: a measurable claim and a multimodal box ticked.
+
+07
+Risks worth naming now
+Risk	Why it bites	Mitigation
+latency — resolved	Was the headline worry: five calls at ~10 s each would have been unusable.	Measured away. Latency scales with output tokens, so capping max_tokens per tier and running G1 ∥ G4 gives 3.9 s for the whole stack. Keep the caps tight — a tier that rambles is a tier that stalls the demo.
+context + images	32,768 tokens is a hard cap, and a full-resolution chart PNG alone cost ~51k — an instant 400.	Downscale charts to ~20 kB JPEG before sending (~302 tokens, verified). Send featurized telemetry windows, never raw buffer dumps. Assert on payload size before the call so it fails in your code, not mid-demo.
+more layers, more failure	Five model calls is five things that can return malformed JSON mid-demo.	Every tier degrades to its deterministic equivalent independently, and the provenance badge already built says which tier is live and which fell back.
+single point of failure	Cloud-only means no endpoint, no demo — and venue wifi is venue wifi.	The fallback chain already exists and now reports itself honestly. Pre-record one full stack run as cached JSON per tier so a cold demo still tells the whole story with the CACHED badge showing.
+scope	P0–P5 is more than a hackathon weekend if attempted at once.	P0 alone fixes the central criticism. P0+P1+P2 is a genuinely strong submission. Treat P3–P5 as upside.
+08
+The demo
+Built around the hardware, because a physical object doing something real is worth more than any slide.
+
+01
+Board sits level on the table. Stack idle, G0 reporting nominal from the live 50 Hz stream.
+02
+Pick it up and rotate it. G0 flags an attitude anomaly from real data — before any threshold trips.
+03
+Inject a second fault, thermal runaway, from the mission tab. Now two faults are live at once.
+04
+G1 returns three competing hypotheses, each citing a procedure section, none asserted as fact.
+05
+G2 notices the conflict the scripted FDIR cannot: the thermal recovery sheds the load the ADCS recovery needs.
+06
+G3 vetoes the first plan for violating the battery floor. G2 re-plans. Show the veto — it is the most persuasive moment you have.
+07
+Approved plan clears the gates and executes. State changes, FDIR re-runs, the delta is on screen.
+08
+G4 packs the capsule under a 40 kB budget beside the naive baseline: fewer files, more answerable questions.
+One line to keep the whole thing honest: Gemma reasons, deterministic code acts. Every number it produces is either checked against telemetry or labelled as an estimate, every plan passes a whitelist before it touches state, and every tier can fail back to the scripted path without taking the demo down.

@@ -1,23 +1,24 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import math
 import time
 
 import plotly.graph_objects as go
 import streamlit as st
-
 import streamlit.components.v1 as components
 
-from parallax import hardware, live_panel, telemetry_server
+from parallax import hardware, live_panel, telemetry_server, stack_ui
+from parallax.benchmark import SCENARIOS, run_all
+from parallax.featurize import featurize_spacecraft_state
+from parallax.fdir import run_fdir, FDIRReport
+from parallax.gemma import live_status as gemma_live_status
+from parallax.config import MODEL_NAME, USE_LIVE_GEMMA
 from parallax.spacecraft import (
     FAULT_DEFINITIONS, SpacecraftState, add_noise, clear_fault, copy_state, fault_details,
     inject_fault,
 )
-from parallax.fdir import run_fdir, FDIRReport
-from parallax.gemma import run_predictive_analysis, live_status as gemma_live_status
-from parallax.config import MODEL_NAME, USE_LIVE_GEMMA
-from parallax.models import GemmaPredictiveAnalysis
+from parallax.tiers import StackResult, run_sentinel, run_stack
+from parallax.validator import apply_approved_plan
 
 st.set_page_config(page_title="PARALLAX FDIR", page_icon="◈", layout="wide", initial_sidebar_state="collapsed")
 
@@ -47,8 +48,6 @@ FAULT_COLOR  = {
     "thermal_runaway":      "#dc2626",
 }
 PHASE_COLOR  = {"detection": RED, "isolation": AMBER, "recovery": BLUE, "monitoring": GREEN}
-# Fixed axis order for hardware series. Red and green stay reserved for health
-# status, so the X/Y/Z triple uses blue/amber/purple (validated for CVD).
 AXIS_COLOR   = {"X": BLUE, "Y": AMBER, "Z": PURPLE}
 OUTCOME_SYM  = {"success": "✓", "partial": "◑", "in_progress": "…", "failed": "✗"}
 
@@ -57,7 +56,6 @@ st.markdown(f"""<style>
 .main .block-container {{ padding: 1.6rem 2.8rem 1.6rem; max-width: 100%; }}
 #MainMenu, footer, header {{ display: none; }}
 
-/* Fault trigger buttons */
 .stButton button {{
     background: {WHITE} !important;
     border: 1.5px solid {BORDER_S} !important;
@@ -76,7 +74,6 @@ st.markdown(f"""<style>
     box-shadow: 0 4px 12px rgba(37,99,235,0.16) !important;
     transform: translateY(-2px) !important;
 }}
-/* An active fault — click again to clear just that one */
 .stButton button[kind="primary"],
 .stButton button[data-testid="baseButton-primary"] {{
     background: {RED}0d !important;
@@ -93,7 +90,6 @@ st.markdown(f"""<style>
     transform: translateY(-2px) !important;
 }}
 
-/* Expander */
 details summary {{
     background: {WHITE};
     border: 1.5px solid {BORDER_S};
@@ -118,7 +114,6 @@ details > div {{
 div[data-testid="stVerticalBlock"] > div {{ gap: 0.5rem; }}
 hr {{ border: none; border-top: 1.5px solid {BORDER}; margin: 10px 0; }}
 
-/* iframe (model viewer) — remove default margin */
 iframe {{ display: block; }}
 </style>""", unsafe_allow_html=True)
 
@@ -138,16 +133,6 @@ def _badge(text, color, sm=False):
             f'padding:2px 9px;border-radius:20px;font-size:{sz};font-weight:700;">{text}</span>')
 
 
-def _bar(pct, color, width=96):
-    w = max(0, min(width, int(pct * width / 100)))
-    return (
-        f'<span style="display:inline-block;vertical-align:middle;'
-        f'width:{width}px;height:7px;background:{BORDER};border-radius:4px;overflow:hidden;">'
-        f'<span style="display:block;width:{w}px;height:7px;background:{color};border-radius:4px;"></span></span>'
-        f'&nbsp;<span style="font-size:0.8em;font-weight:700;color:{color};">{pct}%</span>'
-    )
-
-
 def _section_label(text):
     st.markdown(
         f'<div style="font-size:0.67em;font-weight:800;color:{TEXT_D};letter-spacing:0.13em;'
@@ -160,11 +145,6 @@ def _section_label(text):
 # ── State helpers ─────────────────────────────────────────────────────────────
 
 def _toggle_fault(fault_id: str):
-    """Break another part of the spacecraft, or repair just this one.
-
-    Faults accumulate: several can be active at once and their effects compound
-    in the shared state.
-    """
     state = copy_state(st.session_state.spacecraft)
     if fault_id in state.active_faults:
         new_state = clear_fault(state, fault_id)
@@ -173,26 +153,28 @@ def _toggle_fault(fault_id: str):
 
     st.session_state.spacecraft    = new_state
     st.session_state.active_faults = list(new_state.active_faults)
-    st.session_state.prediction    = None
+    st.session_state.stack_result  = None
+    st.session_state.pre_plan_state = None
 
     if new_state.active_faults:
-        st.session_state.fdir_report  = run_fdir(new_state)   # instant, no AI
-        st.session_state.gemma_needed = True
+        st.session_state.fdir_report  = run_fdir(new_state)
+        st.session_state.stack_needed = True
     else:
         st.session_state.fdir_report  = None
-        st.session_state.gemma_needed = False
+        st.session_state.stack_needed = False
 
 
 def _reset():
-    st.session_state.spacecraft    = SpacecraftState()
-    st.session_state.fdir_report   = None
-    st.session_state.prediction    = None
-    st.session_state.active_faults = []
-    st.session_state.gemma_needed  = False
+    st.session_state.spacecraft     = SpacecraftState()
+    st.session_state.fdir_report    = None
+    st.session_state.stack_result   = None
+    st.session_state.active_faults  = []
+    st.session_state.stack_needed   = False
+    st.session_state.pre_plan_state = None
+    st.session_state.plan_committed = False
 
 
 def _fault_buttons(active_faults, key_prefix):
-    """Six always-available injectors; active ones are highlighted toggles."""
     fcols = st.columns(6)
     for i, (fid, fdef) in enumerate(FAULT_DEFINITIONS.items()):
         is_active = fid in active_faults
@@ -209,60 +191,118 @@ def _fault_buttons(active_faults, key_prefix):
                 st.rerun()
 
 
-def _call_gemma(state, fdir):
+def _hardware_samples() -> list:
+    link = _serial_link()
+    return link.history() if link.is_running() else []
+
+
+def _run_stack_now(state, fdir):
+    """Fire the five-tier stack. G0 is skipped here — it runs on its own timer."""
+    from parallax.benchmark import _synthetic_evidence
+
+    samples = _hardware_samples()
+    featurised = featurize_spacecraft_state(state, samples=samples)
     fids = list(st.session_state.active_faults)
-    state_dict = {k: v for k, v in state.__dict__.items() if not k.startswith("_")}
-    fdir_dict = {
-        "triggered": fdir.triggered,
-        "active_faults": fdir.active_faults,
-        "actions": [{"timestamp": a.timestamp, "phase": a.phase,
-                     "message": a.message, "outcome": a.outcome} for a in fdir.actions],
-        "mission_safe": fdir.mission_safe,
-        "summary": fdir.summary,
-    }
+    evidence = _synthetic_evidence(fids)
+
     try:
-        pred, is_live = run_predictive_analysis(
-            state_dict, fdir_dict,
-            "Asteria-7, Jupiter approach cruise, Earth delay 38 minutes, autonomous operations required.",
-            fids,
+        result = run_stack(
+            featurised_state=featurised,
+            fdir_summary=fdir.summary if fdir else "",
+            active_faults=fids,
+            available_evidence=evidence,
+            current_state=state,
+            include_sentinel=False,
+            max_replans=1,
         )
-        st.session_state.prediction = pred
-        st.session_state.gemma_live = is_live
-        st.session_state.gemma_error = None if is_live else gemma_live_status()
+        st.session_state.stack_result = result
+        st.session_state.pre_plan_state = copy_state(state)
+        # If any tier reported an error the trace already carries it — we just
+        # record a summary line for the status pill.
+        errored = [t for t in result.traces if t.error]
+        st.session_state.gemma_error = errored[0].error if errored else None
+        st.session_state.gemma_live = all(t.is_live for t in result.traces if t.tier != "G3" or t.ok)
     except Exception as exc:
-        st.session_state.gemma_error = str(exc)
+        st.session_state.stack_result = None
+        st.session_state.gemma_error = f"{type(exc).__name__}: {exc}"
         st.session_state.gemma_live = False
-    st.session_state.gemma_needed = False
+    st.session_state.stack_needed = False
+
+
+def _commit_plan():
+    """Apply the currently approved plan to live spacecraft state and re-run FDIR."""
+    result: StackResult | None = st.session_state.get("stack_result")
+    if not result or not result.plan:
+        return
+    if not (result.validation and result.validation.approved and result.verdict and result.verdict.approved):
+        return
+
+    steps = [s.model_dump() for s in result.plan.steps]
+    new_state = apply_approved_plan(steps, st.session_state.spacecraft)
+    st.session_state.spacecraft = new_state
+    st.session_state.active_faults = list(new_state.active_faults)
+    st.session_state.fdir_report = run_fdir(new_state)
+    st.session_state.plan_committed = True
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    if "spacecraft" not in st.session_state:
-        st.session_state.spacecraft    = SpacecraftState()
-        st.session_state.fdir_report   = None
-        st.session_state.prediction    = None
-        st.session_state.active_faults = []
-        st.session_state.gemma_needed  = False
-        st.session_state.tick          = 0
+    _init_state()
 
     st.session_state.tick += 1
-    state: SpacecraftState       = st.session_state.spacecraft
-    noisy                        = add_noise(copy_state(state), seed=st.session_state.tick)
-    fdir: FDIRReport             = st.session_state.fdir_report
-    pred: GemmaPredictiveAnalysis = st.session_state.prediction
-    active_faults                = list(state.active_faults)
-    fault_active                 = bool(active_faults)
-    gemma_needed                 = st.session_state.gemma_needed
+    state: SpacecraftState = st.session_state.spacecraft
+    noisy                  = add_noise(copy_state(state), seed=st.session_state.tick)
+    fdir: FDIRReport       = st.session_state.fdir_report
+    stack_result: StackResult | None = st.session_state.stack_result
+    active_faults          = list(state.active_faults)
+    fault_active           = bool(active_faults)
+    stack_needed           = st.session_state.stack_needed
 
-    # ── HEADER ───────────────────────────────────────────────────────────────
+    _render_header(active_faults, fault_active)
+    st.markdown("---")
+    _render_mission_control(state, noisy, fdir, stack_result, active_faults, stack_needed)
+
+    st.markdown("---")
+    _render_bottom_row(state, stack_result)
+
+    st.markdown("---")
+    st.markdown(
+        f'<div style="color:{TEXT_D};font-size:0.7em;text-align:center;">'
+        f'PARALLAX · Five-role Gemma reasoning stack on Asteria-7 · G0 SENTINEL · G1 DIAGNOSTICIAN · '
+        f'G2 FLIGHT DIRECTOR · G3 ADJUDICATOR · G4 ARCHIVIST</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _init_state():
+    defaults = {
+        "spacecraft":     SpacecraftState(),
+        "fdir_report":    None,
+        "stack_result":   None,
+        "active_faults":  [],
+        "stack_needed":   False,
+        "pre_plan_state": None,
+        "plan_committed": False,
+        "tick":           0,
+        "sentinel_verdict":  None,
+        "sentinel_ok":       False,
+        "sentinel_last_run": 0.0,
+        "capsule_budget_kb": 25,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def _render_header(active_faults, fault_active):
     ha, hb, hc = st.columns([1, 2, 1])
     with ha:
         st.markdown(
             f'<div style="font-weight:900;color:{NAVY};font-size:1.8em;letter-spacing:0.05em;'
             f'line-height:1.05;">PARALLAX</div>'
             f'<div style="color:{TEXT_D};font-size:0.67em;font-weight:700;letter-spacing:0.14em;'
-            f'margin-top:3px;">FDIR + GEMMA INTELLIGENCE</div>',
+            f'margin-top:3px;">FIVE-ROLE GEMMA REASONING STACK</div>',
             unsafe_allow_html=True,
         )
     with hb:
@@ -285,23 +325,8 @@ def main():
             unsafe_allow_html=True,
         )
 
-    st.markdown("---")
-
-    _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_needed)
-
-    # ── FOOTER ───────────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown(
-        f'<div style="color:{TEXT_D};font-size:0.7em;text-align:center;">'
-        f'PARALLAX · Autonomous FDIR with Gemma predictive intelligence · Asteria-7 deep-space mission</div>',
-        unsafe_allow_html=True,
-    )
-
 
 def _live_model(height: int = 580):
-    """Canvas satellite panel driven by the loopback telemetry feed."""
-    # Use white as the panel BG so the satellite and readouts sit on a clean
-    # white surface that pops against the page's light blue-gray background.
     palette = {"BG": WHITE, "WHITE": WHITE, "BORDER": BORDER, "BORDER_S": BORDER_S,
                "TEXT": TEXT, "TEXT_M": TEXT_M, "TEXT_D": TEXT_D,
                "GREEN": GREEN, "AMBER": AMBER, "RED": RED}
@@ -311,7 +336,7 @@ def _live_model(height: int = 580):
     )
 
 
-def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_needed):
+def _render_mission_control(state, noisy, fdir, stack_result, active_faults, stack_needed):
     fault_active = bool(active_faults)
 
     # ── LIVE SENSOR STRIP ─────────────────────────────────────────────────────
@@ -343,12 +368,14 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
 
     st.markdown("---")
 
+    # ── G0 SENTINEL STRIP (continuous watch) ─────────────────────────────────
+    _render_sentinel_strip()
+
     with st.expander("⚙  Hardware Link — Board Connection & Sensor Traces", expanded=False):
         _render_hardware_expander()
 
     st.markdown("---")
 
-    # ── NOMINAL STATE ─────────────────────────────────────────────────────────
     if not fault_active:
         st.markdown(
             f'<div style="color:{TEXT_D};font-size:0.7em;font-weight:700;letter-spacing:0.12em;margin-bottom:8px;">'
@@ -363,271 +390,245 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
             _live_model()
             st.markdown(
                 f'<div style="text-align:center;color:{TEXT_D};font-size:0.76em;margin-top:2px;">'
-                f'Select one or more faults above to trigger FDIR recovery and Gemma AI analysis</div>',
+                f'Select one or more faults above to trigger FDIR recovery and the Gemma reasoning stack</div>',
+                unsafe_allow_html=True,
+            )
+        return
+
+    # ── FAULT ACTIVE ─────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div style="color:{TEXT_D};font-size:0.7em;font-weight:700;letter-spacing:0.12em;margin-bottom:8px;">'
+        f'ACTIVE FAULTS — CLICK TO BREAK ANOTHER PART, OR CLICK A HIGHLIGHTED FAULT TO REPAIR IT:</div>',
+        unsafe_allow_html=True,
+    )
+    _fault_buttons(active_faults, "btn")
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    rc, _ = st.columns([1, 8])
+    with rc:
+        if st.button("↩ Reset all", type="secondary"):
+            _reset()
+            st.rerun()
+
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+    left_col, mid_col, right_col = st.columns([1, 1.9, 1.6])
+
+    with left_col:
+        _render_fdir_column(state, fdir, active_faults)
+
+    with mid_col:
+        _section_label("SPACECRAFT STATE")
+        _live_model(height=440)
+        hcols = st.columns(3)
+        for i, (sname, hstatus) in enumerate(noisy.subsystem_health.items()):
+            hc = HEALTH_COLOR.get(hstatus, TEXT_D)
+            hi = HEALTH_ICON.get(hstatus, "?")
+            with hcols[i % 3]:
+                st.markdown(
+                    f'<div style="background:{hc}12;border:1px solid {hc}30;border-radius:6px;'
+                    f'padding:5px 8px;text-align:center;margin:2px 0;">'
+                    f'<span style="color:{hc};font-size:0.7em;font-weight:700;">{hi} {sname}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+    with right_col:
+        _render_stack_column(state, fdir, stack_result, stack_needed)
+
+
+def _render_fdir_column(state, fdir, active_faults):
+    _section_label("FDIR AUTONOMOUS RECOVERY")
+
+    for fid in active_faults:
+        fd = fault_details(state, fid)
+        fc = FAULT_COLOR.get(fid, AMBER)
+        st.markdown(_card(
+            f'<div style="color:{fc};font-weight:700;font-size:0.83em;margin-bottom:4px;">⚡ {fd.get("label","").upper()}</div>'
+            f'<div style="color:{TEXT_M};font-size:0.75em;line-height:1.45;">{fd.get("description","")}</div>',
+            left_color=fc,
+        ), unsafe_allow_html=True)
+
+    if fdir and fdir.triggered:
+        for a in fdir.actions:
+            c   = PHASE_COLOR.get(a.phase, TEXT_D)
+            sym = OUTCOME_SYM.get(a.outcome, "")
+            edge = FAULT_COLOR.get(a.fault_id, c) if len(active_faults) > 1 else c
+            msg = a.message
+            for prefix in ("RECOVERY: ", "ISOLATION: "):
+                if msg.startswith(prefix):
+                    msg = msg[len(prefix):]
+            st.markdown(
+                f'<div style="border-left:3px solid {edge}55;padding:4px 10px;margin:2px 0;">'
+                f'<span style="color:{TEXT_D};font-size:0.67em;font-family:monospace;">[{a.timestamp}]</span>&nbsp;'
+                f'<span style="color:{c};font-size:0.73em;font-weight:600;">{sym} {msg}</span>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
 
-    # ── FAULT ACTIVE STATE ────────────────────────────────────────────────────
-    else:
+        safe_c = GREEN if fdir.mission_safe else RED
+        safe_l = ("MISSION SAFE — CONTINGENCY MODE"
+                  if fdir.mission_safe else "⚠ MISSION CRITICAL")
         st.markdown(
-            f'<div style="color:{TEXT_D};font-size:0.7em;font-weight:700;letter-spacing:0.12em;margin-bottom:8px;">'
-            f'ACTIVE FAULTS — CLICK TO BREAK ANOTHER PART, OR CLICK A HIGHLIGHTED FAULT TO REPAIR IT:</div>',
+            f'<div style="margin-top:12px;padding:9px 14px;background:{safe_c}10;'
+            f'border:1.5px solid {safe_c}40;border-radius:8px;font-size:0.76em;'
+            f'font-weight:700;color:{safe_c};text-align:center;">{safe_l}</div>',
             unsafe_allow_html=True,
         )
-        _fault_buttons(active_faults, "btn")
 
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        rc, _ = st.columns([1, 8])
-        with rc:
-            if st.button("↩ Reset all", type="secondary"):
-                _reset()
-                st.rerun()
 
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+def _render_stack_column(state, fdir, stack_result: StackResult | None, stack_needed: bool):
+    _section_label("GEMMA REASONING STACK")
 
-        left_col, mid_col, right_col = st.columns([1, 1.9, 1.3])
+    if stack_needed and stack_result is None:
+        with st.spinner("Five-tier stack running — G1 ∥ G4, then G2, then G3…"):
+            _run_stack_now(state, fdir)
+        st.rerun()
 
-        # ── LEFT: FDIR (runs instantly, zero AI) ─────────────────────────────
-        with left_col:
-            _section_label("FDIR AUTONOMOUS RECOVERY")
+    if stack_result is None:
+        st.markdown(_card(
+            f'<div style="color:{TEXT_D};font-size:0.8em;text-align:center;padding:20px 0;">'
+            f'Awaiting five-tier stack pass</div>',
+        ), unsafe_allow_html=True)
+        return
 
-            # One identity card per concurrently active fault
-            for fid in active_faults:
-                fd = fault_details(state, fid)
-                fc = FAULT_COLOR.get(fid, AMBER)
-                st.markdown(_card(
-                    f'<div style="color:{fc};font-weight:700;font-size:0.83em;margin-bottom:4px;">⚡ {fd.get("label","").upper()}</div>'
-                    f'<div style="color:{TEXT_M};font-size:0.75em;line-height:1.45;">{fd.get("description","")}</div>',
-                    left_color=fc,
-                ), unsafe_allow_html=True)
+    # Live/cache status line + pipeline strip
+    if st.session_state.get("gemma_live"):
+        st.markdown(
+            f'<div style="margin-bottom:6px;">{_badge(f"◆ LIVE — {MODEL_NAME}", GREEN, sm=True)}</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        reason = st.session_state.get("gemma_error")
+        label = "OFFLINE — LIVE CALLS DISABLED" if not USE_LIVE_GEMMA else "SOME TIERS FELL BACK"
+        st.markdown(
+            f'<div style="margin-bottom:6px;">{_badge("⛃ " + label, AMBER, sm=True)}</div>'
+            + (f'<div style="font-size:0.68em;color:{TEXT_D};line-height:1.45;'
+               f'margin:-2px 0 6px;">{reason}</div>' if reason else ""),
+            unsafe_allow_html=True,
+        )
 
-            # FDIR timeline — colour-coded by the fault each action belongs to
-            if fdir and fdir.triggered:
-                for a in fdir.actions:
-                    c   = PHASE_COLOR.get(a.phase, TEXT_D)
-                    sym = OUTCOME_SYM.get(a.outcome, "")
-                    edge = FAULT_COLOR.get(a.fault_id, c) if len(active_faults) > 1 else c
-                    msg = a.message
-                    for prefix in ("RECOVERY: ", "ISOLATION: "):
-                        if msg.startswith(prefix):
-                            msg = msg[len(prefix):]
-                    st.markdown(
-                        f'<div style="border-left:3px solid {edge}55;padding:4px 10px;margin:2px 0;">'
-                        f'<span style="color:{TEXT_D};font-size:0.67em;font-family:monospace;">[{a.timestamp}]</span>&nbsp;'
-                        f'<span style="color:{c};font-size:0.73em;font-weight:600;">{sym} {msg}</span>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
+    stack_ui.render_pipeline_strip(stack_result.traces, stack_result.wall_time_s,
+                                    stack_result.plan_iterations)
 
-                safe_c = GREEN if fdir.mission_safe else RED
-                safe_l = ("MISSION SAFE — CONTINGENCY MODE"
-                          if fdir.mission_safe else "⚠ MISSION CRITICAL")
-                st.markdown(
-                    f'<div style="margin-top:12px;padding:9px 14px;background:{safe_c}10;'
-                    f'border:1.5px solid {safe_c}40;border-radius:8px;font-size:0.76em;'
-                    f'font-weight:700;color:{safe_c};text-align:center;">{safe_l}</div>',
-                    unsafe_allow_html=True,
-                )
+    # G1: competing hypotheses
+    stack_ui.render_diagnosis(stack_result.diagnosis)
 
-        # ── CENTRE: 3D MODEL + HEALTH ─────────────────────────────────────────
-        with mid_col:
-            _section_label("SPACECRAFT STATE")
+    # G2 plan + gate outcomes
+    if stack_result.plan and stack_result.validation is not None:
+        stack_ui.render_plan_and_gates(stack_result.plan, stack_result.validation, stack_result.verdict)
 
-            _live_model(height=480)
+    # G3 adjudicator verdict
+    stack_ui.render_adjudicator(stack_result.verdict)
 
-            # Subsystem health grid
-            hcols = st.columns(3)
-            for i, (sname, hstatus) in enumerate(noisy.subsystem_health.items()):
-                hc = HEALTH_COLOR.get(hstatus, TEXT_D)
-                hi = HEALTH_ICON.get(hstatus, "?")
-                with hcols[i % 3]:
-                    st.markdown(
-                        f'<div style="background:{hc}12;border:1px solid {hc}30;border-radius:6px;'
-                        f'padding:5px 8px;text-align:center;margin:2px 0;">'
-                        f'<span style="color:{hc};font-size:0.7em;font-weight:700;">{hi} {sname}</span>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
+    # Execute / commit control
+    approved = bool(
+        stack_result.validation and stack_result.validation.approved
+        and stack_result.verdict and stack_result.verdict.approved
+    )
+    committed = st.session_state.get("plan_committed", False)
+    button_label = "▶ EXECUTE APPROVED PLAN" if not committed else "✓ PLAN COMMITTED"
+    if approved and not committed:
+        if st.button(button_label, key="commit_plan", use_container_width=True, type="primary"):
+            _commit_plan()
+            st.rerun()
 
-        # ── RIGHT: GEMMA (spinner while loading, results when ready) ──────────
-        with right_col:
-            _section_label("GEMMA INTELLIGENCE LAYER")
+    # Before / after
+    if stack_result.projected_state and st.session_state.get("pre_plan_state"):
+        stack_ui.render_before_after(st.session_state.pre_plan_state, stack_result.projected_state)
 
-            # Say plainly where this analysis came from. A cached answer shown
-            # as a live one misrepresents what the system actually did.
-            if pred is not None:
-                if st.session_state.get("gemma_live"):
-                    st.markdown(
-                        f'<div style="margin-bottom:6px;">{_badge(f"◆ LIVE — {MODEL_NAME}", GREEN, sm=True)}</div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    reason = st.session_state.get("gemma_error")
-                    label = "CACHED — LIVE CALLS OFF" if not USE_LIVE_GEMMA else "CACHED — LIVE CALL FAILED"
-                    st.markdown(
-                        f'<div style="margin-bottom:6px;">{_badge("⛃ " + label, AMBER, sm=True)}</div>'
-                        + (f'<div style="font-size:0.68em;color:{TEXT_D};line-height:1.45;'
-                           f'margin:-2px 0 6px;">{reason}</div>' if reason else ""),
-                        unsafe_allow_html=True,
-                    )
 
-            if gemma_needed and pred is None:
-                with st.spinner("Gemma analysing the situation..."):
-                    _call_gemma(state, fdir)
-                st.rerun()
+# ── G0 sentinel strip (live only, throttled) ────────────────────────────────
 
-            elif pred is None and not gemma_needed:
-                st.markdown(_card(
-                    f'<div style="color:{TEXT_D};font-size:0.8em;text-align:center;padding:20px 0;">Awaiting analysis</div>',
-                ), unsafe_allow_html=True)
+SENTINEL_INTERVAL_S = 4.0     # cheap enough to run frequently, deliberately slower than 1 Hz
+                              # to keep API budget honest during an unattended demo.
 
-            else:
-                # Stability banner
-                stab_c = {"stable": GREEN, "degraded": AMBER,
-                          "critical": RED, "unknown": TEXT_D}.get(pred.system_stability, TEXT_D)
-                earth_d    = getattr(pred, "earth_delay_min",       38)
-                basic_pct  = getattr(pred, "basic_fix_success_pct", 70)
-                cascade_pct = getattr(pred, "cascade_failure_pct",   25)
-                basic_c    = GREEN if basic_pct  >= 75 else (AMBER if basic_pct  >= 50 else RED)
-                casc_c     = RED   if cascade_pct >= 50 else (AMBER if cascade_pct >= 25 else GREEN)
 
-                st.markdown(_card(
-                    f'<div style="color:{stab_c};font-weight:700;font-size:0.82em;margin-bottom:10px;">'
-                    f'SYSTEM STABILITY: {pred.system_stability.upper()}</div>'
-                    f'<div style="font-size:0.74em;color:{TEXT_M};margin:5px 0;">'
-                    f'Earth signal delay&nbsp;&nbsp;<strong style="color:{TEXT};">{earth_d} min one-way</strong></div>'
-                    f'<div style="font-size:0.74em;color:{TEXT_M};margin:5px 0;">'
-                    f'Basic FDIR success&nbsp;&nbsp;&nbsp;{_bar(basic_pct,  basic_c)}</div>'
-                    f'<div style="font-size:0.74em;color:{TEXT_M};margin:5px 0;">'
-                    f'Cascade failure risk {_bar(cascade_pct, casc_c)}</div>',
-                    left_color=stab_c,
-                ), unsafe_allow_html=True)
+def _render_sentinel_strip():
+    link = _serial_link()
+    if not link.is_live():
+        # Only render the sentinel when there is actually a stream to watch —
+        # a "SENTINEL: nominal" chip on a dead feed would be misleading.
+        return
 
-                # Short assessment
-                blurb = pred.current_assessment
-                if len(blurb) > 230:
-                    blurb = blurb[:227] + "…"
-                st.markdown(
-                    f'<div style="font-size:0.74em;color:{TEXT_M};line-height:1.55;'
-                    f'border-left:3px solid {BORDER_S};padding:6px 10px;margin:6px 0;">{blurb}</div>',
-                    unsafe_allow_html=True,
-                )
+    now = time.time()
+    last_run = st.session_state.get("sentinel_last_run", 0.0)
+    if now - last_run > SENTINEL_INTERVAL_S:
+        samples = link.history()
+        featurised = featurize_spacecraft_state(st.session_state.spacecraft, samples=samples)
+        result = run_sentinel(featurised.get("hardware_features", featurised))
+        st.session_state.sentinel_verdict = result.payload
+        st.session_state.sentinel_ok = result.trace.ok and result.trace.is_live
+        st.session_state.sentinel_latency = result.trace.latency_s
+        st.session_state.sentinel_last_run = now
 
-                # Fix options
-                alt_fixes = getattr(pred, "alternative_fixes", [])
-                chosen    = getattr(pred, "chosen_fix", "")
-                if alt_fixes:
-                    st.markdown(
-                        f'<div style="font-size:0.68em;font-weight:700;color:{TEXT_D};'
-                        f'letter-spacing:0.1em;margin:8px 0 4px;">FIX OPTIONS</div>',
-                        unsafe_allow_html=True,
-                    )
-                    for fix in alt_fixes:
-                        is_chosen = fix.name == chosen
-                        fpct  = getattr(fix, "success_pct", 0)
-                        fc2   = GREEN if fpct >= 75 else (AMBER if fpct >= 50 else RED)
-                        bc    = BLUE if is_chosen else BORDER
-                        bg    = "#eff6ff" if is_chosen else WHITE
-                        sel   = f'&nbsp;{_badge("SELECTED", BLUE, sm=True)}' if is_chosen else ""
-                        auto  = _badge("AUTO",   GREEN, sm=True) if fix.autonomous else _badge("MANUAL", AMBER, sm=True)
-                        st.markdown(
-                            f'<div style="background:{bg};border:1.5px solid {bc};border-radius:8px;'
-                            f'padding:8px 12px;margin:4px 0;">'
-                            f'<div style="font-size:0.78em;font-weight:700;color:{TEXT};margin-bottom:3px;">'
-                            f'{fix.name}{sel}</div>'
-                            f'<div style="font-size:0.7em;color:{TEXT_M};margin-bottom:6px;line-height:1.4;">'
-                            f'{fix.description}</div>'
-                            f'<div>{_bar(fpct, fc2, 80)}&nbsp;'
-                            f'<span style="font-size:0.66em;color:{TEXT_D};">[{fix.risk.upper()} RISK]</span>'
-                            f'&nbsp;{auto}</div>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
+    verdict = st.session_state.get("sentinel_verdict")
+    stack_ui.render_sentinel_strip(verdict,
+                                    is_live=st.session_state.get("sentinel_ok", False),
+                                    latency_s=st.session_state.get("sentinel_latency", 0.0))
 
-                # Decision
-                execute      = getattr(pred, "execute_immediately", True)
-                reason       = getattr(pred, "execute_reason", "")
-                chosen_name  = getattr(pred, "chosen_fix", "Basic FDIR Recovery")
-                dc  = GREEN if execute else AMBER
-                dl  = f"EXECUTE: {chosen_name}" if execute else f"HOLD — MONITOR: {chosen_name}"
-                st.markdown(
-                    f'<div style="background:{dc}10;border:2px solid {dc}40;border-radius:8px;'
-                    f'padding:10px 14px;margin-top:10px;">'
-                    f'<div style="font-size:0.68em;font-weight:700;color:{TEXT_D};margin-bottom:4px;'
-                    f'letter-spacing:0.08em;">GEMMA DECISION</div>'
-                    f'<div style="font-weight:700;color:{dc};font-size:0.82em;">{dl}</div>'
-                    + (f'<div style="font-size:0.72em;color:{TEXT_M};margin-top:5px;">{reason}</div>'
-                       if reason else "")
-                    + '</div>',
-                    unsafe_allow_html=True,
-                )
 
-        # ── DEEP DIVE ─────────────────────────────────────────────────────────
-        if pred is not None:
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            with st.expander("📊 Deep Dive — Predicted Failures, Cascading Risks & Earth Transmission Report"):
-                d1, d2, d3 = st.columns([1, 1, 1])
+# ── Bottom row: G4 capsule + benchmark ──────────────────────────────────────
 
-                with d1:
-                    st.markdown(f'<div style="font-weight:700;color:{TEXT};font-size:0.88em;margin-bottom:10px;">Predicted Next Failures</div>', unsafe_allow_html=True)
-                    if pred.predicted_failures:
-                        for pf in pred.predicted_failures:
-                            pc = RED if pf.probability == "high" else (AMBER if pf.probability == "medium" else GREEN)
-                            warnings = "".join(f'<div style="margin-top:2px;">· {w}</div>' for w in pf.early_warning_signs)
-                            st.markdown(
-                                f'<div style="background:{WHITE};border:1px solid {BORDER};'
-                                f'border-left:4px solid {pc};border-radius:6px;padding:10px 12px;margin:6px 0;">'
-                                f'<div style="font-weight:700;font-size:0.82em;color:{TEXT};margin-bottom:3px;">{pf.subsystem}</div>'
-                                f'<div style="font-size:0.75em;color:{TEXT_M};margin-bottom:5px;">{pf.failure_mode}</div>'
-                                f'<div style="font-size:0.72em;margin-bottom:5px;">'
-                                f'{_badge(pf.probability.upper()+" RISK", pc, sm=True)}'
-                                f'&nbsp;&nbsp;<span style="color:{TEXT_D};">⏱ {pf.estimated_time_to_failure}</span></div>'
-                                f'<div style="font-size:0.7em;color:{TEXT_D};line-height:1.5;">{warnings}</div>'
-                                f'</div>',
-                                unsafe_allow_html=True,
-                            )
-                    else:
-                        st.markdown(f'<div style="color:{TEXT_D};font-size:0.8em;">No failures predicted at this time.</div>', unsafe_allow_html=True)
+def _render_bottom_row(state, stack_result: StackResult | None):
+    with st.expander("🗂  G4 · Evidence Capsule — PARALLAX knapsack vs. naive baseline",
+                     expanded=False):
+        _render_capsule_expander(state, stack_result)
 
-                with d2:
-                    st.markdown(f'<div style="font-weight:700;color:{TEXT};font-size:0.88em;margin-bottom:10px;">Cascading Risks</div>', unsafe_allow_html=True)
-                    for risk in pred.cascading_risks:
-                        st.markdown(
-                            f'<div style="background:{AMBER}0a;border:1px solid {AMBER}30;'
-                            f'border-left:4px solid {AMBER};border-radius:6px;padding:8px 12px;'
-                            f'margin:5px 0;font-size:0.77em;color:{TEXT_M};line-height:1.45;">⚠ {risk}</div>',
-                            unsafe_allow_html=True,
-                        )
-                    if not pred.cascading_risks:
-                        st.markdown(f'<div style="color:{TEXT_D};font-size:0.8em;">No cascading risks identified.</div>', unsafe_allow_html=True)
+    with st.expander("📊 Benchmark harness — five-tier stack vs. bare FDIR across scenarios",
+                     expanded=False):
+        _render_benchmark_expander()
 
-                    st.markdown(f'<div style="font-weight:700;color:{TEXT};font-size:0.88em;margin-top:18px;margin-bottom:10px;">Recommended Actions</div>', unsafe_allow_html=True)
-                    for i, action in enumerate(pred.recommended_actions, 1):
-                        st.markdown(
-                            f'<div style="background:{BLUE}08;border:1px solid {BLUE}25;'
-                            f'border-left:4px solid {BLUE};border-radius:6px;padding:8px 12px;'
-                            f'margin:4px 0;font-size:0.77em;color:{TEXT_M};line-height:1.45;">'
-                            f'<strong style="color:{BLUE};">{i}.</strong> {action}</div>',
-                            unsafe_allow_html=True,
-                        )
 
-                with d3:
-                    st.markdown(f'<div style="font-weight:700;color:{TEXT};font-size:0.88em;margin-bottom:10px;">Earth Transmission Report</div>', unsafe_allow_html=True)
-                    st.markdown(
-                        f'<div style="background:#f8fafc;border:1px solid {BORDER};border-radius:8px;'
-                        f'padding:14px 16px;font-family:monospace;font-size:0.72em;color:{TEXT_M};'
-                        f'white-space:pre-wrap;line-height:1.65;max-height:340px;overflow-y:auto;">'
-                        f'{pred.earth_report}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    conf_c = GREEN if pred.confidence == "high" else (AMBER if pred.confidence == "medium" else RED)
-                    st.markdown(
-                        f'<div style="margin-top:8px;font-size:0.74em;color:{TEXT_D};">'
-                        f'Confidence: {_badge(pred.confidence.upper(), conf_c, sm=True)}</div>',
-                        unsafe_allow_html=True,
-                    )
+def _render_capsule_expander(state, stack_result: StackResult | None):
+    if stack_result is None or stack_result.packing is None:
+        st.markdown(
+            f'<div style="color:{TEXT_D};font-size:0.8em;">'
+            f'Inject a fault and run the reasoning stack to populate the capsule.</div>',
+            unsafe_allow_html=True,
+        )
+        return
 
-# ── Hardware resources (shared across the whole server process) ───────────────
+    from parallax.benchmark import _synthetic_evidence
+    fids = list(state.active_faults)
+    evidence = _synthetic_evidence(fids)
+
+    ccol, _ = st.columns([1, 3])
+    with ccol:
+        budget_kb = st.slider("Downlink budget (kB)", min_value=8, max_value=60,
+                              value=st.session_state.get("capsule_budget_kb", 25),
+                              step=1, key="capsule_budget_slider")
+        st.session_state["capsule_budget_kb"] = budget_kb
+
+    hypotheses = stack_result.diagnosis.hypotheses if stack_result.diagnosis else []
+    stack_ui.render_capsule_panel(stack_result.packing, hypotheses, evidence,
+                                   budget_bytes=budget_kb * 1024)
+
+
+def _render_benchmark_expander():
+    ccol, statecol = st.columns([1, 3])
+    with ccol:
+        run = st.button("▶ Run benchmark", key="bench_run", use_container_width=True)
+    with statecol:
+        st.markdown(
+            f'<div style="color:{TEXT_D};font-size:0.75em;padding-top:10px;line-height:1.5;">'
+            f'{len(SCENARIOS)} scenarios — 6 single faults + 3 compound "recovery-scripts-fight-each-other" cases. '
+            f'Each runs through bare FDIR and through the five-tier stack.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    if run:
+        with st.spinner("Running benchmark — this makes real Gemma calls…"):
+            report = run_all(SCENARIOS)
+        st.session_state.bench_report = report
+
+    report = st.session_state.get("bench_report")
+    if report:
+        stack_ui.render_benchmark_report(report)
+
+
+# ── Hardware infrastructure (unchanged) ─────────────────────────────────────
 
 @st.cache_resource
 def _serial_link() -> hardware.SerialLink:
@@ -752,14 +753,12 @@ def _render_hardware_expander():
 
 @st.fragment(run_every=0.8)
 def _render_traces():
-    """Slow fragment — history charts, spacecraft sync and the raw frame table."""
     link = _serial_link()
     latest = link.latest()
     samples = link.history()
     if latest is None:
         return
 
-    # ── Traces ───────────────────────────────────────────────────────────────
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     gcol, acol = st.columns(2)
     with gcol:
@@ -789,7 +788,6 @@ def _render_traces():
             use_container_width=True, config={"displayModeBar": False},
         )
 
-    # ── Spacecraft sync ──────────────────────────────────────────────────────
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
     mapped = hardware.map_to_spacecraft(latest)
     synced = st.toggle(
