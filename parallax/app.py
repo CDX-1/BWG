@@ -15,7 +15,8 @@ from parallax.spacecraft import (
     inject_fault,
 )
 from parallax.fdir import run_fdir, FDIRReport
-from parallax.gemma import run_predictive_analysis
+from parallax.gemma import run_predictive_analysis, live_status as gemma_live_status
+from parallax.config import MODEL_NAME, USE_LIVE_GEMMA
 from parallax.models import GemmaPredictiveAnalysis
 from parallax.satellite_view import build_satellite_figure
 
@@ -214,14 +215,17 @@ def _call_gemma(state, fdir):
         "summary": fdir.summary,
     }
     try:
-        pred, _ = run_predictive_analysis(
+        pred, is_live = run_predictive_analysis(
             state_dict, fdir_dict,
             "Asteria-7, Jupiter approach cruise, Earth delay 38 minutes, autonomous operations required.",
             fids,
         )
         st.session_state.prediction = pred
+        st.session_state.gemma_live = is_live
+        st.session_state.gemma_error = None if is_live else gemma_live_status()
     except Exception as exc:
         st.session_state.gemma_error = str(exc)
+        st.session_state.gemma_live = False
     st.session_state.gemma_needed = False
 
 
@@ -427,6 +431,24 @@ def _render_mission_control(state, noisy, fdir, pred, active_faults, gemma_neede
         # ── RIGHT: GEMMA (spinner while loading, results when ready) ──────────
         with right_col:
             _section_label("GEMMA INTELLIGENCE LAYER")
+
+            # Say plainly where this analysis came from. A cached answer shown
+            # as a live one misrepresents what the system actually did.
+            if pred is not None:
+                if st.session_state.get("gemma_live"):
+                    st.markdown(
+                        f'<div style="margin-bottom:6px;">{_badge(f"◆ LIVE — {MODEL_NAME}", GREEN, sm=True)}</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    reason = st.session_state.get("gemma_error")
+                    label = "CACHED — LIVE CALLS OFF" if not USE_LIVE_GEMMA else "CACHED — LIVE CALL FAILED"
+                    st.markdown(
+                        f'<div style="margin-bottom:6px;">{_badge("⛃ " + label, AMBER, sm=True)}</div>'
+                        + (f'<div style="font-size:0.68em;color:{TEXT_D};line-height:1.45;'
+                           f'margin:-2px 0 6px;">{reason}</div>' if reason else ""),
+                        unsafe_allow_html=True,
+                    )
 
             if gemma_needed and pred is None:
                 with st.spinner("Gemma analysing the situation..."):

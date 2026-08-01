@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import ssl
 import urllib.request
 import urllib.error
 import streamlit as st
@@ -156,6 +157,25 @@ def _build_prompt(scenario: dict, retrieved_context: list[dict]) -> str:
     )
 
 
+# Why every live call silently fell back to the cache: the python.org macOS
+# build ships no CA bundle, so HTTPS to the Gemma host raised
+# CERTIFICATE_VERIFY_FAILED before a request was ever sent.
+try:
+    import certifi
+    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CONTEXT = ssl.create_default_context()
+
+
+# Reason the most recent live attempt failed, for the UI to show instead of
+# quietly serving cached text as though it came from the model.
+last_live_error: str | None = None
+
+
+def live_status() -> str | None:
+    return last_live_error
+
+
 def _call_gemma_api(prompt: str) -> str:
     payload = json.dumps({
         "model": MODEL_NAME,
@@ -168,7 +188,7 @@ def _call_gemma_api(prompt: str) -> str:
         headers["Authorization"] = f"Bearer {API_KEY}"
 
     req = urllib.request.Request(GEMMA_ENDPOINT, data=payload, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=60, context=_SSL_CONTEXT) as resp:
         data = json.loads(resp.read())
 
     return data["choices"][0]["message"]["content"]
@@ -196,7 +216,7 @@ def stream_gemma(prompt: str):
         headers["Authorization"] = f"Bearer {API_KEY}"
 
     req = urllib.request.Request(GEMMA_ENDPOINT, data=payload, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=120, context=_SSL_CONTEXT) as resp:
         for raw_line in resp:
             line = raw_line.decode("utf-8").rstrip("\r\n")
             if not line.startswith("data: "):
@@ -272,6 +292,7 @@ def run_predictive_analysis(
 
     `fault_id` accepts a single id or a list of concurrently active ids.
     """
+    global last_live_error
     fault_ids = [fault_id] if isinstance(fault_id, str) else list(fault_id)
     fault_ids = [f for f in fault_ids if f]
 
@@ -295,9 +316,12 @@ def run_predictive_analysis(
             text = re.sub(r"^```(?:json)?\n?", "", raw.strip())
             text = re.sub(r"\n?```$", "", text.strip())
             analysis = GemmaPredictiveAnalysis.model_validate(json.loads(text))
+            last_live_error = None
             return analysis, True
-        except Exception:
-            pass
+        except Exception as exc:
+            # Record rather than swallow: a cached answer presented as a live
+            # one is worse than an obvious error.
+            last_live_error = f"{type(exc).__name__}: {exc}"
 
     # Cached predictions are only valid for the isolated, named demo cases.
     # Runtime event context must never be replaced with a scripted result.
