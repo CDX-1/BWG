@@ -299,12 +299,12 @@ _TEMPLATE = r"""
     const {roll,pitch,yaw}=shown;
 
     // Project a single model-space point
-    const proj=(p)=>project(rotate(p,pitch,roll,yaw), cx,cy,sc);
+    const proj=(p)=>project(rotate(p,-pitch,roll,yaw), cx,cy,sc);
 
     // Back-face cull → project → collect
     const visible=[];
     for (const face of SAT) {
-      const wn=rotate(face.norm,pitch,roll,yaw);
+      const wn=rotate(face.norm,-pitch,roll,yaw);
       if (dot3(wn,EYE_N)<-0.06) continue;
       const pv=face.verts.map(v=>proj(v));
       const depth=pv.reduce((s,p)=>s+p[2],0)/pv.length;
