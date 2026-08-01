@@ -350,6 +350,69 @@ def render_before_after(before, after):
     ), unsafe_allow_html=True)
 
 
+# ── Sensor loss-of-signal strip ─────────────────────────────────────────────
+
+def render_sensor_health_strip(report):
+    """Small horizontal strip showing per-sensor health from the ESP32 payload.
+
+    Rendered only when a hardware link is running — same discipline as G0.
+    A sensor in "failed" state produces the amber/red banner used in the
+    demo to trigger the operator's attention before the stack fires.
+    """
+    if report is None:
+        return
+
+    from parallax.sensor_health import SensorState
+
+    order = ["link", "imu", "range", "temp"]
+    labels = {"link": "Link", "imu": "IMU", "range": "Range", "temp": "Temp"}
+
+    tiles: list[str] = []
+    for key in order:
+        state: SensorState | None = report.per_sensor.get(key)
+        if state is None:
+            continue
+        color = {"nominal": GREEN, "degraded": AMBER,
+                 "failed": RED, "unknown": TEXT_D}.get(state.status, TEXT_D)
+        icon = {"nominal": "●", "degraded": "◑",
+                "failed": "○", "unknown": "?"}.get(state.status, "?")
+        tiles.append(
+            f'<div style="flex:1;background:{color}0c;border:1px solid {color}55;'
+            f'border-left:4px solid {color};border-radius:8px;padding:7px 10px;'
+            f'display:flex;flex-direction:column;gap:2px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<span style="font-size:0.66em;font-weight:800;color:{TEXT_D};letter-spacing:0.09em;">'
+            f'SENSOR · {labels[key].upper()}</span>'
+            f'<span style="font-size:0.85em;font-weight:800;color:{color};">{icon}</span>'
+            f'</div>'
+            f'<div style="font-size:0.72em;color:{color};font-weight:700;">{state.status.upper()}</div>'
+            + (f'<div style="font-size:0.66em;color:{TEXT_M};line-height:1.35;">{state.reason}</div>'
+               if state.reason else "")
+            + '</div>'
+        )
+
+    banner = ""
+    if report.any_failed:
+        banner = (
+            f'<div style="background:{RED}12;border:1px solid {RED}55;border-left:5px solid {RED};'
+            f'border-radius:8px;padding:8px 14px;margin-bottom:6px;'
+            f'font-weight:800;color:{RED};font-size:0.78em;">'
+            f'⚠ SENSOR LOSS DETECTED — {report.summary()}</div>'
+        )
+    elif report.any_degraded:
+        banner = (
+            f'<div style="background:{AMBER}10;border:1px solid {AMBER}55;border-left:5px solid {AMBER};'
+            f'border-radius:8px;padding:8px 14px;margin-bottom:6px;'
+            f'font-weight:700;color:{AMBER};font-size:0.76em;">'
+            f'{report.summary()}</div>'
+        )
+
+    st.markdown(
+        banner + f'<div style="display:flex;gap:6px;margin-bottom:8px;">{"".join(tiles)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ── G0 sentinel strip ───────────────────────────────────────────────────────
 
 def render_sentinel_strip(verdict: SentinelVerdict, is_live: bool, latency_s: float):

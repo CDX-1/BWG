@@ -159,6 +159,27 @@ FAULT_DEFINITIONS = {
         "description": "PCU thermal spike. Cascading risk to power and electronics.",
         "apply": lambda s: _apply_thermal_runaway(s),
     },
+    "sensor_loss_imu": {
+        "label": "IMU Loss of Signal",
+        "icon": "◐",
+        "subsystem": "ADCS",
+        "description": "Gyro / accelerometer stopped reporting. Attitude estimate is stale — pointing decisions unsafe.",
+        "apply": lambda s: _apply_sensor_loss_imu(s),
+    },
+    "sensor_loss_range": {
+        "label": "Range Sensor Loss",
+        "icon": "◑",
+        "subsystem": "Science",
+        "description": "Proximity/ranging transducer silent. Docking and hazard detection unavailable.",
+        "apply": lambda s: _apply_sensor_loss_range(s),
+    },
+    "sensor_loss_link": {
+        "label": "Payload Link Loss",
+        "icon": "◒",
+        "subsystem": "Science",
+        "description": "Entire sensor payload link is silent. No new science telemetry until the bus is restored.",
+        "apply": lambda s: _apply_sensor_loss_link(s),
+    },
 }
 
 
@@ -380,4 +401,39 @@ def _apply_thermal_runaway(s: SpacecraftState) -> SpacecraftState:
     _degrade_health(s, "Power", "degraded")
     s.solar_output_w *= 0.82
     s.bus_voltage_v = _worse_low(s.bus_voltage_v, 26.2)
+    return s
+
+
+# ── Sensor-loss faults ───────────────────────────────────────────────────
+# These are triggered either by the operator (fault button) or automatically
+# by the hardware sensor health monitor when a live board's sensor goes out.
+# The state effect is deliberately conservative: we don't fabricate a "worse"
+# attitude number, because the whole point is that the value is UNKNOWN. We
+# do degrade the affected subsystem so downstream reasoning has to plan for
+# it, and we place the ADCS into "sensor_loss" mode.
+
+def _apply_sensor_loss_imu(s: SpacecraftState) -> SpacecraftState:
+    _degrade_health(s, "ADCS", "failed")
+    _degrade_component(s, "Reaction-wheel assembly", "degraded")
+    # Attitude estimate is stale rather than known-bad; mark it with a
+    # sentinel large value so the UI can render "unknown".
+    s.adcs_mode = "sensor_loss"
+    s.rw_speed_rpm = _worse_low(s.rw_speed_rpm, 800.0)
+    return s
+
+
+def _apply_sensor_loss_range(s: SpacecraftState) -> SpacecraftState:
+    _degrade_health(s, "Science", "degraded")
+    _degrade_component(s, "Spectrometer", "degraded")
+    return s
+
+
+def _apply_sensor_loss_link(s: SpacecraftState) -> SpacecraftState:
+    # Whole payload link down — treat all sensor-fed subsystems as degraded
+    # simultaneously. This mirrors the historical "safe mode after payload
+    # bus fault" recovery path from the sensor-loss knowledge base.
+    _degrade_health(s, "Science", "failed")
+    _degrade_health(s, "ADCS", "degraded")
+    s.spectrometer_status = "no_data"
+    s.adcs_mode = "sensor_loss"
     return s

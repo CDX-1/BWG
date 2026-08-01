@@ -171,12 +171,18 @@ def featurize_hardware_buffer(samples: list[SensorSample]) -> dict:
     }
 
 
-def featurize_spacecraft_state(state, samples: list[SensorSample] | None = None) -> dict:
+def featurize_spacecraft_state(
+    state,
+    samples: list[SensorSample] | None = None,
+    sensor_health: dict | None = None,
+) -> dict:
     """Produce a compact featurised snapshot to send to the tier prompts.
 
     Combines the spacecraft simulator state (which is a scalar snapshot) with
     the windowed hardware features when a live board is connected. When the
-    board is absent, `hardware_features` is omitted rather than faked.
+    board is absent, `hardware_features` is omitted rather than faked. When
+    a sensor-health payload is supplied, it is included so the tier prompts
+    can reason about loss-of-signal events without a separate call path.
     """
     payload = {
         "mission_time_s": round(getattr(state, "mission_time_s", 0.0), 1),
@@ -205,5 +211,8 @@ def featurize_spacecraft_state(state, samples: list[SensorSample] | None = None)
 
     if samples:
         payload["hardware_features"] = featurize_hardware_buffer(samples)
+
+    if sensor_health:
+        payload["sensor_health"] = sensor_health
 
     return payload

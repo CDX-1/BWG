@@ -143,6 +143,44 @@ def _hold_and_observe(state: SpacecraftState, params: dict) -> SpacecraftState:
     return state
 
 
+# ── Sensor loss recovery ─────────────────────────────────────────────────
+
+def _preserve_last_known_state(state: SpacecraftState, params: dict) -> SpacecraftState:
+    """Stop integrating attitude from a suspect sensor stream.
+
+    In real ADCS this freezes the attitude estimate at its last good sample
+    rather than continuing to trust a frozen sensor. In our simulation we
+    hold the ADCS mode explicitly so downstream steps know not to rely on
+    live sensor input.
+    """
+    state.adcs_mode = "attitude_hold"
+    return state
+
+
+def _switch_to_backup_sensor(state: SpacecraftState, params: dict) -> SpacecraftState:
+    sensor = params.get("sensor", "star_tracker")
+    if state.subsystem_health.get("ADCS") == "failed" and sensor in {"star_tracker", "imu_secondary"}:
+        state.subsystem_health["ADCS"] = "recovering"
+    # Restore a plausible attitude reading — the backup sensor gives us
+    # coarser data than the primary, so the numbers relax toward nominal
+    # but not all the way back.
+    state.attitude_error_arcsec = min(state.attitude_error_arcsec, 6.0)
+    state.adcs_mode = f"backup_{sensor}"
+    return state
+
+
+def _enable_dead_reckoning(state: SpacecraftState, params: dict) -> SpacecraftState:
+    """Propagate attitude and position from the orbital model.
+
+    Buys time when all attitude sensors are down. Accuracy degrades with
+    duration, so this is a bridge action, not a permanent recovery.
+    """
+    state.adcs_mode = "dead_reckoning"
+    if state.subsystem_health.get("ADCS") == "failed":
+        state.subsystem_health["ADCS"] = "degraded"
+    return state
+
+
 # ── The vocabulary ───────────────────────────────────────────────────────────
 
 ACTIONS: dict[str, ActionSpec] = {
@@ -247,6 +285,34 @@ ACTIONS: dict[str, ActionSpec] = {
         battery_delta_pct=+0.05,
         requires_comms_path=None,
         apply_fn=_hold_and_observe,
+    ),
+    "preserve_last_known_state": ActionSpec(
+        name="preserve_last_known_state",
+        description="Freeze attitude estimate at last valid sample; stop trusting the suspect sensor stream.",
+        human_label="Preserve last-known state",
+        params={},
+        battery_delta_pct=+0.0,
+        requires_comms_path=None,
+        apply_fn=_preserve_last_known_state,
+    ),
+    "switch_to_backup_sensor": ActionSpec(
+        name="switch_to_backup_sensor",
+        description="Route ADCS from the failed primary sensor to a named backup.",
+        human_label="Switch to backup sensor",
+        params={"sensor": {"type": "string",
+                            "choices": {"star_tracker", "sun_sensor", "imu_secondary", "ranging_lidar"}}},
+        battery_delta_pct=-0.3,
+        requires_comms_path=None,
+        apply_fn=_switch_to_backup_sensor,
+    ),
+    "enable_dead_reckoning": ActionSpec(
+        name="enable_dead_reckoning",
+        description="Propagate attitude / position from the orbital model when all sensors are down.",
+        human_label="Enable dead reckoning",
+        params={},
+        battery_delta_pct=+0.1,
+        requires_comms_path=None,
+        apply_fn=_enable_dead_reckoning,
     ),
 }
 

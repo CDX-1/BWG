@@ -386,13 +386,30 @@ def run_diagnostician(
     fdir_summary: str,
     active_faults: list[str],
 ) -> TierResult:
+    # If any sensor-loss fault is in play, add sensor-loss terms so the TF-IDF
+    # retriever surfaces knowledge/sensor_loss.md chunks. Historical incidents
+    # (Hubble gyros, Kepler K2, Cassini, MRO) live there and give G1 concrete
+    # precedent to cite alongside the current telemetry.
+    is_sensor_loss = any(f.startswith("sensor_loss") for f in active_faults)
     query = ("competing hypotheses recovery procedures for "
              + ", ".join(active_faults or ["unknown anomaly"]))
-    chunks, retrieved_text = _retrieve_context(query, top_k=3)
+    if is_sensor_loss:
+        query += (" sensor loss of signal historical incidents Hubble gyro "
+                  "Kepler K2 Cassini bearing MRO IMU dead reckoning")
+
+    chunks, retrieved_text = _retrieve_context(query, top_k=4 if is_sensor_loss else 3)
+
+    sensor_health = featurised_state.get("sensor_health") or {}
+    sensor_line = ""
+    if sensor_health:
+        sensor_line = (
+            f"\nSENSOR HEALTH: {sensor_health.get('summary', 'unknown')} "
+            f"(events: {', '.join(sensor_health.get('active_loss_events', [])) or 'none'})\n"
+        )
 
     user_prompt = (
         f"FEATURISED STATE:\n{json.dumps(featurised_state, indent=2)}\n\n"
-        f"FDIR SUMMARY: {fdir_summary}\n\n"
+        f"FDIR SUMMARY: {fdir_summary}{sensor_line}\n"
         f"RETRIEVED PROCEDURES:\n{retrieved_text}\n"
     )
 
@@ -490,6 +507,10 @@ _FLIGHT_DIRECTOR_SYSTEM = (
     "pointing), arbitrate — do NOT concatenate independent recovery scripts.\n"
     "- No step may risk the battery below 40% or leave the spacecraft with "
     "no working comms path.\n"
+    "- For a suspected sensor loss: preserve_last_known_state FIRST, then "
+    "switch_to_backup_sensor or enable_dead_reckoning. Do NOT slew or "
+    "re-point on stale sensor data. Do NOT enter safe mode if comms is "
+    "also compromised — attitude hold is safer than a blind re-point.\n"
     "- Cite at least one procedure section per step.\n\n"
     "Reply ONLY as JSON:\n"
     "{\n"
@@ -510,9 +531,15 @@ def run_flight_director(
     fdir_summary: str,
     forbidden_actions: set[str] | None = None,
 ) -> TierResult:
-    query = ("recovery plan sequencing for "
-             + ", ".join(featurised_state.get("active_faults", [])) or "anomaly recovery")
-    chunks, retrieved_text = _retrieve_context(query, top_k=2)
+    active_faults = featurised_state.get("active_faults", [])
+    is_sensor_loss = any(f.startswith("sensor_loss") for f in active_faults)
+
+    query = ("recovery plan sequencing for " + ", ".join(active_faults or ["anomaly recovery"]))
+    if is_sensor_loss:
+        query += (" preserve last known state switch backup sensor "
+                  "dead reckoning attitude hold Hubble Kepler MRO")
+
+    chunks, retrieved_text = _retrieve_context(query, top_k=3 if is_sensor_loss else 2)
 
     vocab = action_vocabulary_for_prompt()
     if forbidden_actions:
@@ -524,10 +551,18 @@ def run_flight_director(
         f"- {h.name} ({h.confidence})" for h in diagnosis.hypotheses
     ) or "(no diagnosis available)"
 
+    sensor_health = featurised_state.get("sensor_health") or {}
+    sensor_line = ""
+    if sensor_health:
+        sensor_line = (
+            f"\nSENSOR HEALTH: {sensor_health.get('summary', 'unknown')} "
+            f"(events: {', '.join(sensor_health.get('active_loss_events', [])) or 'none'})\n"
+        )
+
     user_prompt = (
         f"COMPETING HYPOTHESES:\n{hypo_summary}\n\n"
         f"FEATURISED STATE:\n{json.dumps(featurised_state, indent=2)}\n\n"
-        f"FDIR SUMMARY: {fdir_summary}\n\n"
+        f"FDIR SUMMARY: {fdir_summary}{sensor_line}\n"
         f"RETRIEVED PROCEDURES:\n{retrieved_text}\n"
     )
 

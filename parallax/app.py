@@ -13,6 +13,7 @@ from parallax.featurize import featurize_spacecraft_state
 from parallax.fdir import run_fdir, FDIRReport
 from parallax.gemma import live_status as gemma_live_status
 from parallax.config import MODEL_NAME, USE_LIVE_GEMMA
+from parallax.sensor_health import evaluate_health, health_to_payload
 from parallax.spacecraft import (
     FAULT_DEFINITIONS, SpacecraftState, add_noise, clear_fault, copy_state, fault_details,
     inject_fault,
@@ -222,6 +223,11 @@ def _toggle_fault(fault_id: str):
     state = copy_state(st.session_state.spacecraft)
     if fault_id in state.active_faults:
         new_state = clear_fault(state, fault_id)
+        # If a sensor-loss fault is cleared manually, allow the auto-injector
+        # to fire again the next time this sensor reports LOS.
+        seen = st.session_state.get("sensor_events_seen") or set()
+        seen.discard(fault_id)
+        st.session_state.sensor_events_seen = seen
     else:
         new_state = inject_fault(state, fault_id)
 
@@ -246,23 +252,31 @@ def _reset():
     st.session_state.stack_needed   = False
     st.session_state.pre_plan_state = None
     st.session_state.plan_committed = False
+    # Rearm the sensor watch so a still-failing sensor re-triggers next poll.
+    st.session_state.sensor_events_seen = set()
 
 
 def _fault_buttons(active_faults, key_prefix):
-    fcols = st.columns(6)
-    for i, (fid, fdef) in enumerate(FAULT_DEFINITIONS.items()):
-        is_active = fid in active_faults
-        with fcols[i]:
-            label = f'{"✓" if is_active else fdef["icon"]}\n{fdef["label"]}'
-            if st.button(
-                label,
-                key=f"{key_prefix}_{fid}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-                help="Click to repair this fault" if is_active else "Click to inject this fault",
-            ):
-                _toggle_fault(fid)
-                st.rerun()
+    fault_items = list(FAULT_DEFINITIONS.items())
+    # Column count auto-scales so newly-added faults (e.g. sensor loss) fit
+    # without spilling. Cap at 6 per row for readability.
+    per_row = min(6, len(fault_items))
+    rows = [fault_items[i:i + per_row] for i in range(0, len(fault_items), per_row)]
+    for row in rows:
+        fcols = st.columns(per_row)
+        for i, (fid, fdef) in enumerate(row):
+            is_active = fid in active_faults
+            with fcols[i]:
+                label = f'{"✓" if is_active else fdef["icon"]}\n{fdef["label"]}'
+                if st.button(
+                    label,
+                    key=f"{key_prefix}_{fid}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                    help="Click to repair this fault" if is_active else "Click to inject this fault",
+                ):
+                    _toggle_fault(fid)
+                    st.rerun()
 
 
 def _hardware_samples() -> list:
@@ -270,12 +284,56 @@ def _hardware_samples() -> list:
     return link.history() if link.is_running() else []
 
 
+def _poll_sensor_health():
+    """Read the current sensor health from the hardware link.
+
+    Auto-injects the corresponding fault (and arms the stack) the first time
+    a new loss-of-signal event is observed. Repeated ticks of the same event
+    do NOT re-inject, so an ongoing LOS doesn't loop through the stack.
+    """
+    link = _serial_link()
+    if not link.is_running():
+        st.session_state.sensor_health = None
+        return
+
+    samples = link.history()
+    report = evaluate_health(link, samples)
+    st.session_state.sensor_health = report
+
+    seen = st.session_state.get("sensor_events_seen") or set()
+    new_events: list[str] = []
+    for fault_id in report.active_loss_events:
+        if fault_id in FAULT_DEFINITIONS and fault_id not in seen:
+            new_events.append(fault_id)
+
+    if not new_events:
+        return
+
+    # Inject each new LOS fault onto the live spacecraft and arm the stack.
+    state = copy_state(st.session_state.spacecraft)
+    for fault_id in new_events:
+        state = inject_fault(state, fault_id)
+        seen.add(fault_id)
+
+    st.session_state.spacecraft = state
+    st.session_state.active_faults = list(state.active_faults)
+    st.session_state.fdir_report = run_fdir(state)
+    st.session_state.stack_needed = True
+    st.session_state.stack_result = None
+    st.session_state.pre_plan_state = None
+    st.session_state.plan_committed = False
+    st.session_state.sensor_events_seen = seen
+
+
 def _run_stack_now(state, fdir):
     """Fire the five-tier stack. G0 is skipped here — it runs on its own timer."""
     from parallax.benchmark import _synthetic_evidence
 
     samples = _hardware_samples()
-    featurised = featurize_spacecraft_state(state, samples=samples)
+    report = st.session_state.get("sensor_health")
+    sensor_payload = health_to_payload(report) if report is not None else None
+    featurised = featurize_spacecraft_state(state, samples=samples,
+                                            sensor_health=sensor_payload)
     fids = list(st.session_state.active_faults)
     evidence = _synthetic_evidence(fids)
 
@@ -325,6 +383,12 @@ def main():
     _init_state()
 
     st.session_state.tick += 1
+
+    # Sensor-loss poll runs FIRST — if the hardware just dropped a sensor
+    # this rerun, the auto-inject below will have already updated the
+    # spacecraft, so the rest of the frame renders the post-injection world.
+    _poll_sensor_health()
+
     state: SpacecraftState = st.session_state.spacecraft
     noisy                  = add_noise(copy_state(state), seed=st.session_state.tick)
     fdir: FDIRReport       = st.session_state.fdir_report
@@ -375,6 +439,11 @@ def _init_state():
         "sentinel_last_run": 0.0,
         "capsule_budget_kb": 25,
         "view_mode":         "simplified",   # "simplified" | "advanced"
+        # Sensor loss-of-signal tracking. `sensor_health` is the latest report
+        # from the hardware; `sensor_events_seen` records which LOS fault ids
+        # have already been auto-injected so we don't re-fire on every rerun.
+        "sensor_health":         None,
+        "sensor_events_seen":    set(),
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -471,6 +540,9 @@ def _render_mission_control(state, noisy, fdir, stack_result, active_faults, sta
             )
 
     st.markdown("---")
+
+    # ── SENSOR HEALTH STRIP (loss-of-signal detector) ────────────────────────
+    stack_ui.render_sensor_health_strip(st.session_state.get("sensor_health"))
 
     # ── G0 SENTINEL STRIP (continuous watch) ─────────────────────────────────
     _render_sentinel_strip()
