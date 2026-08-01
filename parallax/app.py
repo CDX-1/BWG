@@ -257,9 +257,14 @@ def _reset():
 
 
 def _fault_buttons(active_faults, key_prefix):
-    fault_items = list(FAULT_DEFINITIONS.items())
-    # Column count auto-scales so newly-added faults (e.g. sensor loss) fit
-    # without spilling. Cap at 6 per row for readability.
+    # Sensor-loss faults are triggered by the hardware watchdog, never by
+    # the operator. Excluding them from the button grid keeps the demo
+    # story honest — "I unplugged the sensor and it noticed" is stronger
+    # than "I clicked a button that said 'sensor loss'".
+    fault_items = [
+        (fid, fdef) for fid, fdef in FAULT_DEFINITIONS.items()
+        if not fid.startswith("sensor_loss")
+    ]
     per_row = min(6, len(fault_items))
     rows = [fault_items[i:i + per_row] for i in range(0, len(fault_items), per_row)]
     for row in rows:
@@ -284,45 +289,83 @@ def _hardware_samples() -> list:
     return link.history() if link.is_running() else []
 
 
-def _poll_sensor_health():
-    """Read the current sensor health from the hardware link.
+def _do_sensor_health_poll() -> bool:
+    """Run one sensor-health evaluation, inject new LOS faults, auto-clear
+    faults whose sensor has recovered.
 
-    Auto-injects the corresponding fault (and arms the stack) the first time
-    a new loss-of-signal event is observed. Repeated ticks of the same event
-    do NOT re-inject, so an ongoing LOS doesn't loop through the stack.
+    Returns True when the poll changed the spacecraft state (either injection
+    or recovery), which is the signal to trigger a full-app rerun so every
+    dependent panel refreshes together.
+
+    Called from both the initial main() pass (so a fresh page load reflects
+    reality) and from the background fragment below (so a mid-session unplug
+    or reconnect is detected without user interaction).
     """
     link = _serial_link()
     if not link.is_running():
         st.session_state.sensor_health = None
-        return
+        return False
 
     samples = link.history()
     report = evaluate_health(link, samples)
     st.session_state.sensor_health = report
 
     seen = st.session_state.get("sensor_events_seen") or set()
-    new_events: list[str] = []
-    for fault_id in report.active_loss_events:
-        if fault_id in FAULT_DEFINITIONS and fault_id not in seen:
-            new_events.append(fault_id)
+    active_now = set(report.active_loss_events)
 
-    if not new_events:
-        return
+    # ── Injections: new LOS events not previously seen ─────────────────
+    new_events = [
+        fault_id for fault_id in active_now
+        if fault_id in FAULT_DEFINITIONS and fault_id not in seen
+    ]
+    # ── Recoveries: previously-seen sensor faults whose sensor is nominal now ─
+    recovered = [
+        fault_id for fault_id in seen
+        if fault_id.startswith("sensor_loss") and fault_id not in active_now
+    ]
 
-    # Inject each new LOS fault onto the live spacecraft and arm the stack.
+    if not new_events and not recovered:
+        return False
+
     state = copy_state(st.session_state.spacecraft)
     for fault_id in new_events:
         state = inject_fault(state, fault_id)
         seen.add(fault_id)
+    for fault_id in recovered:
+        if fault_id in state.active_faults:
+            state = clear_fault(state, fault_id)
+        seen.discard(fault_id)
 
     st.session_state.spacecraft = state
     st.session_state.active_faults = list(state.active_faults)
-    st.session_state.fdir_report = run_fdir(state)
-    st.session_state.stack_needed = True
-    st.session_state.stack_result = None
-    st.session_state.pre_plan_state = None
-    st.session_state.plan_committed = False
+    st.session_state.fdir_report = run_fdir(state) if state.active_faults else None
+    # A new injection re-arms the stack. A pure recovery doesn't — the
+    # spacecraft is quieter now, no need to re-plan.
+    if new_events:
+        st.session_state.stack_needed = True
+        st.session_state.stack_result = None
+        st.session_state.pre_plan_state = None
+        st.session_state.plan_committed = False
     st.session_state.sensor_events_seen = seen
+    return True
+
+
+@st.fragment(run_every=1.5)
+def _sensor_health_watchdog():
+    """Background sensor-loss detector — the reason LOS actually auto-injects.
+
+    Streamlit only re-runs the page on user interaction. Without this fragment
+    a physical unplug would sit undetected until the operator clicked something.
+    The fragment re-executes itself every 1.5 s regardless of interaction, so
+    a stale IMU or a persistent no-echo is caught within that window.
+
+    When a new LOS event is observed, `st.rerun(scope="app")` triggers a full
+    page rerender so the injected fault, the FDIR replay, and the stack panel
+    all update together — the fragment on its own only refreshes itself.
+    """
+    changed = _do_sensor_health_poll()
+    if changed:
+        st.rerun(scope="app")
 
 
 def _run_stack_now(state, fdir):
@@ -384,10 +427,14 @@ def main():
 
     st.session_state.tick += 1
 
-    # Sensor-loss poll runs FIRST — if the hardware just dropped a sensor
-    # this rerun, the auto-inject below will have already updated the
-    # spacecraft, so the rest of the frame renders the post-injection world.
-    _poll_sensor_health()
+    # One synchronous poll per rerun so a fresh page load reflects reality
+    # immediately. Between reruns the watchdog fragment below keeps polling
+    # in the background at 1.5 s cadence.
+    _do_sensor_health_poll()
+
+    # Mount the always-on sensor-loss watchdog. Its render output is empty;
+    # it exists purely to keep the poll firing when the user isn't clicking.
+    _sensor_health_watchdog()
 
     state: SpacecraftState = st.session_state.spacecraft
     noisy                  = add_noise(copy_state(state), seed=st.session_state.tick)
