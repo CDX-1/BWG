@@ -7,6 +7,7 @@ import streamlit as st
 
 from parallax.config import GEMMA_ENDPOINT, API_KEY, USE_LIVE_GEMMA, MODEL_NAME, CACHED_OUTPUTS_DIR
 from parallax.models import GemmaPredictiveAnalysis, ParallaxAnalysis, PredictedFailure, FixOption
+from parallax.spacecraft import FAULT_DEFINITIONS
 
 PROMPT_TEMPLATE = """You are PARALLAX, an evidence-preservation assistant for a deep-space spacecraft operating under communication delay.
 
@@ -88,6 +89,7 @@ Rules:
 - Consider physical causality — power faults stress batteries, thermal faults stress electronics, ADCS faults reduce solar input
 - Never invent sensor readings not present in the input
 - The spacecraft has a 38-minute Earth communication delay — only recommend autonomous fixes
+- Several faults may be active AT THE SAME TIME. When they are, assess the combined state, not each fault in isolation: identify how the faults interact and compete for the same power, thermal and pointing margin, note where one fault removes the backup path another recovery depends on, and lower the success probabilities accordingly
 - Return ONLY valid JSON matching the schema exactly
 
 SPACECRAFT STATE:
@@ -262,10 +264,17 @@ def run_predictive_analysis(
     state_dict: dict,
     fdir_dict: dict,
     mission_context: str,
-    fault_id: str,
+    fault_id: str | list[str],
     fault_context: dict | None = None,
     stream_callback=None,
 ) -> tuple["GemmaPredictiveAnalysis", bool]:
+    """Analyse the spacecraft under one or several simultaneously active faults.
+
+    `fault_id` accepts a single id or a list of concurrently active ids.
+    """
+    fault_ids = [fault_id] if isinstance(fault_id, str) else list(fault_id)
+    fault_ids = [f for f in fault_ids if f]
+
     prompt = PREDICTIVE_PROMPT_TEMPLATE.format(
         state_json=json.dumps(state_dict, indent=2),
         fdir_json=json.dumps(fdir_dict, indent=2),
@@ -293,18 +302,33 @@ def run_predictive_analysis(
     # Cached predictions are only valid for the isolated, named demo cases.
     # Runtime event context must never be replaced with a scripted result.
     if fault_context:
-        return _dynamic_predictive_fallback(state_dict, fdir_dict, fault_context, fault_id), False
+        primary = fault_ids[0] if fault_ids else ""
+        return _dynamic_predictive_fallback(state_dict, fdir_dict, fault_context, primary), False
 
-    try:
-        path = os.path.join(CACHED_OUTPUTS_DIR, f"predict_{fault_id}.json")
-        with open(path) as f:
-            data = json.load(f)
-        analysis = GemmaPredictiveAnalysis.model_validate(data)
-        if not analysis.alternative_fixes:
-            analysis = _augment_with_fixes(analysis, fault_id)
-        return analysis, False
-    except Exception as e:
-        raise RuntimeError(f"No cached prediction for {fault_id}: {e}")
+    analyses = []
+    missing = []
+    for fid in fault_ids:
+        try:
+            analyses.append((fid, _load_cached_prediction(fid)))
+        except Exception:
+            missing.append(fid)
+
+    if not analyses:
+        raise RuntimeError(f"No cached prediction for {', '.join(fault_ids) or 'unknown fault'}")
+    if len(analyses) == 1 and not missing:
+        return analyses[0][1], False
+
+    return _combine_predictions(analyses, state_dict, fdir_dict), False
+
+
+def _load_cached_prediction(fault_id: str) -> GemmaPredictiveAnalysis:
+    path = os.path.join(CACHED_OUTPUTS_DIR, f"predict_{fault_id}.json")
+    with open(path) as f:
+        data = json.load(f)
+    analysis = GemmaPredictiveAnalysis.model_validate(data)
+    if not analysis.alternative_fixes:
+        analysis = _augment_with_fixes(analysis, fault_id)
+    return analysis
 
 
 _FALLBACK_FIXES: dict[str, list[FixOption]] = {
@@ -367,6 +391,146 @@ def _augment_with_fixes(analysis: GemmaPredictiveAnalysis, fault_id: str) -> Gem
         "cascade_failure_pct": metrics.get("cascade_failure_pct", analysis.cascade_failure_pct),
         "earth_delay_min": 38,
     })
+
+
+_STABILITY_RANK = {"stable": 0, "unknown": 1, "degraded": 2, "critical": 3}
+# Shared low/medium/high scale, used for both confidence and probability.
+_LEVEL_RANK = {"high": 2, "medium": 1, "low": 0}
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(items))
+
+
+def _fault_label(fault_id: str) -> str:
+    definition = FAULT_DEFINITIONS.get(fault_id, {})
+    return definition.get("label", fault_id.replace("_", " ").title())
+
+
+def _combine_predictions(
+    analyses: list[tuple[str, GemmaPredictiveAnalysis]],
+    state_dict: dict,
+    fdir_dict: dict,
+) -> GemmaPredictiveAnalysis:
+    """Merge the per-fault cached analyses into one compound-fault assessment.
+
+    The offline path has no cached output for arbitrary fault combinations, so
+    the individual analyses are composed probabilistically: each recovery must
+    independently succeed, and any one cascade is enough to lose the mission.
+    """
+    labels = [_fault_label(fid) for fid, _ in analyses]
+    parts = [analysis for _, analysis in analyses]
+
+    basic_success = 1.0
+    no_cascade = 1.0
+    for analysis in parts:
+        basic_success *= analysis.basic_fix_success_pct / 100
+        no_cascade *= 1 - (analysis.cascade_failure_pct / 100)
+    basic_fix_success_pct = max(1, round(basic_success * 100))
+    cascade_failure_pct = min(97, round((1 - no_cascade) * 100))
+
+    health = state_dict.get("subsystem_health", {})
+    failed = [name for name, status in health.items() if status == "failed"]
+    stability = max((a.system_stability for a in parts), key=lambda s: _STABILITY_RANK.get(s, 1))
+    if len(failed) > 1:
+        stability = "critical"
+
+    # One best autonomous option per fault, plus a whole-spacecraft fallback.
+    fixes: list[FixOption] = []
+    for fid, analysis in analyses:
+        candidates = [f for f in analysis.alternative_fixes if f.autonomous] or analysis.alternative_fixes
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda f: f.success_pct)
+        fixes.append(best.model_copy(update={
+            "name": f"{_fault_label(fid)}: {best.name}",
+            "success_pct": max(1, round(best.success_pct * (0.85 ** (len(parts) - 1)))),
+        }))
+    fixes.append(FixOption(
+        name="Staged Safe Mode Entry",
+        description=(
+            f"Suspend science, hold Sun-pointing and recover {len(parts)} faults sequentially "
+            f"in power-priority order rather than concurrently."
+        ),
+        success_pct=max(basic_fix_success_pct, 84),
+        risk="medium",
+        autonomous=True,
+    ))
+
+    best_overall = max([f for f in fixes if f.autonomous] or fixes, key=lambda f: f.success_pct)
+
+    # Merged lists are capped so the compound view stays readable in the UI.
+    predicted: list[PredictedFailure] = []
+    seen = set()
+    for analysis in parts:
+        for failure in analysis.predicted_failures:
+            key = (failure.subsystem, failure.failure_mode)
+            if key not in seen:
+                seen.add(key)
+                predicted.append(failure)
+    predicted.sort(key=lambda f: -_LEVEL_RANK.get(f.probability, 0))
+    predicted = predicted[:6]
+
+    risks = _dedupe([risk for analysis in parts for risk in analysis.cascading_risks])[:6]
+    risks.insert(0, (
+        f"{len(parts)} concurrent faults ({', '.join(labels)}) share one power and thermal budget — "
+        f"recovery sequences compete for margin that is sized for a single failure."
+    ))
+    if len(failed) > 1:
+        risks.insert(1, (
+            f"Failed subsystems {', '.join(failed)} remove each other's backup path; "
+            f"no cross-subsystem redundancy remains."
+        ))
+
+    actions = [
+        f"Sequence recovery by power priority — do not run {len(parts)} recovery paths concurrently.",
+        *_dedupe([action for analysis in parts for action in analysis.recommended_actions])[:6],
+    ]
+
+    assessment = (
+        f"{len(parts)} faults are active simultaneously: {', '.join(labels)}. "
+        f"Combined basic-FDIR success falls to {basic_fix_success_pct}% because each recovery must hold "
+        f"independently, and cascade risk rises to {cascade_failure_pct}%. "
+        + " ".join(a.current_assessment for a in parts)
+    )
+
+    report_sections = "\n\n".join(
+        f"— {label} —\n{analysis.earth_report}" for label, (_, analysis) in zip(labels, analyses)
+    )
+    earth_report = (
+        f"PRIORITY REPORT — COMPOUND ANOMALY ({len(parts)} CONCURRENT FAULTS)\n\n"
+        f"FAULTS: {', '.join(labels)}\n"
+        f"FAILED SUBSYSTEMS: {', '.join(failed) or 'none'}\n"
+        f"STATUS: {fdir_dict.get('summary', 'FDIR review pending')}\n"
+        f"COMBINED FDIR SUCCESS: {basic_fix_success_pct}%  ·  CASCADE RISK: {cascade_failure_pct}%\n\n"
+        f"{report_sections}"
+    )
+
+    # Composing single-fault analyses is weaker evidence than a purpose-built
+    # assessment of the combination, so never claim high confidence here.
+    confidence = min((a.confidence for a in parts), key=lambda c: _LEVEL_RANK.get(c, 0))
+    if confidence == "high":
+        confidence = "medium"
+
+    return GemmaPredictiveAnalysis(
+        current_assessment=assessment,
+        system_stability=stability,
+        earth_delay_min=parts[0].earth_delay_min,
+        basic_fix_success_pct=basic_fix_success_pct,
+        cascade_failure_pct=cascade_failure_pct,
+        predicted_failures=predicted,
+        cascading_risks=risks,
+        alternative_fixes=fixes,
+        chosen_fix=best_overall.name,
+        execute_immediately=best_overall.autonomous and best_overall.success_pct >= 75,
+        execute_reason=(
+            f"Best autonomous option across {len(parts)} concurrent faults: "
+            f"{best_overall.success_pct}% with {best_overall.risk} risk."
+        ),
+        recommended_actions=actions,
+        earth_report=earth_report,
+        confidence=confidence,
+    )
 
 
 def _dynamic_predictive_fallback(

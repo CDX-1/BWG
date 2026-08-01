@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 HEALTH_STATES = {"nominal", "degraded", "failed", "recovering"}
 SEVERITY_TO_HEALTH = {"advisory": "degraded", "warning": "degraded", "critical": "failed"}
 
+# Ordering used when several concurrent faults touch the same subsystem or
+# component: the worst reported health always wins, never the last one applied.
+HEALTH_SEVERITY = {"nominal": 0, "recovering": 1, "degraded": 2, "failed": 3}
+
 # These names are shared with the 3D model.  A custom event can target any of
 # them without needing a new hard-coded fault definition.
 VISUAL_COMPONENTS = [
@@ -159,10 +163,40 @@ FAULT_DEFINITIONS = {
 
 
 def inject_fault(state: SpacecraftState, fault_id: str) -> SpacecraftState:
-    if fault_id in FAULT_DEFINITIONS:
+    """Add one fault on top of whatever is already broken.
+
+    Injection is idempotent: re-triggering an active fault must not stack its
+    telemetry damage a second time.
+    """
+    if fault_id in FAULT_DEFINITIONS and fault_id not in state.active_faults:
         state = FAULT_DEFINITIONS[fault_id]["apply"](state)
-        if fault_id not in state.active_faults:
-            state.active_faults.append(fault_id)
+        state.active_faults.append(fault_id)
+    return state
+
+
+def clear_fault(state: SpacecraftState, fault_id: str) -> SpacecraftState:
+    """Remove one fault, keeping every other active fault intact.
+
+    Telemetry damage is not individually reversible, so the state is rebuilt
+    from a clean spacecraft with the remaining faults re-applied.
+    """
+    remaining = [f for f in state.active_faults if f != fault_id]
+    metadata = {k: v for k, v in state.fault_metadata.items() if k != fault_id}
+    return rebuild_state(remaining, metadata)
+
+
+def rebuild_state(fault_ids: list[str], fault_metadata: dict | None = None) -> SpacecraftState:
+    """Build a spacecraft state carrying exactly `fault_ids`, applied in order."""
+    state = SpacecraftState()
+    state.fault_metadata = copy.deepcopy(fault_metadata or {})
+    for fault_id in fault_ids:
+        if fault_id in FAULT_DEFINITIONS:
+            state = FAULT_DEFINITIONS[fault_id]["apply"](state)
+        elif fault_id in state.fault_metadata:
+            _apply_custom_metadata(state, state.fault_metadata[fault_id])
+        else:
+            continue
+        state.active_faults.append(fault_id)
     return state
 
 
@@ -241,15 +275,6 @@ def inject_custom_fault(
         suffix += 1
         fault_id = f"{base_id}_{suffix}"
 
-    for field_name, value in overrides.items():
-        setattr(state, field_name, value)
-
-    health = SEVERITY_TO_HEALTH[severity]
-    for subsystem in subsystems:
-        state.subsystem_health[subsystem] = health
-    for component in components:
-        state.component_states[component] = health
-
     state.fault_metadata[fault_id] = {
         "label": title,
         "icon": "✦",
@@ -259,8 +284,21 @@ def inject_custom_fault(
         "telemetry_overrides": overrides,
         "components": components,
     }
+    _apply_custom_metadata(state, state.fault_metadata[fault_id])
     state.active_faults.append(fault_id)
     return state, fault_id
+
+
+def _apply_custom_metadata(state: SpacecraftState, metadata: dict) -> None:
+    """Apply a stored custom anomaly, alongside any other active faults."""
+    for field_name, value in metadata.get("telemetry_overrides", {}).items():
+        setattr(state, field_name, value)
+
+    health = SEVERITY_TO_HEALTH[metadata.get("severity", "warning")]
+    for subsystem in metadata.get("subsystems", []):
+        _degrade_health(state, subsystem, health)
+    for component in metadata.get("components", []):
+        _degrade_component(state, component, health)
 
 
 def fault_details(state: SpacecraftState, fault_id: str) -> dict:
@@ -270,50 +308,76 @@ def fault_details(state: SpacecraftState, fault_id: str) -> dict:
     }))
 
 
+# Faults can be active at the same time, so every mutation below is written to
+# compose: rates scale multiplicatively, absolute readings settle on the worse
+# of the two values, and health only ever degrades further.
+
+def _degrade_health(s: SpacecraftState, subsystem: str, health: str) -> None:
+    current = s.subsystem_health.get(subsystem, "nominal")
+    if HEALTH_SEVERITY[health] > HEALTH_SEVERITY.get(current, 0):
+        s.subsystem_health[subsystem] = health
+
+
+def _degrade_component(s: SpacecraftState, component: str, health: str) -> None:
+    current = s.component_states.get(component, "nominal")
+    if HEALTH_SEVERITY[health] > HEALTH_SEVERITY.get(current, 0):
+        s.component_states[component] = health
+
+
+def _worse_high(current: float, value: float) -> float:
+    """For readings where higher is worse (temperatures, pointing error)."""
+    return max(current, value)
+
+
+def _worse_low(current: float, value: float) -> float:
+    """For readings where lower is worse (voltage, link margin, data rate)."""
+    return min(current, value)
+
+
 def _apply_solar_string_loss(s: SpacecraftState) -> SpacecraftState:
     s.solar_output_w *= 0.65
-    s.solar_efficiency_pct = 65.0
+    s.solar_efficiency_pct = _worse_low(s.solar_efficiency_pct, 65.0)
     s.battery_soc_pct -= 2.1
-    s.subsystem_health["Power"] = "degraded"
+    _degrade_health(s, "Power", "degraded")
     return s
 
 def _apply_pcu_fault(s: SpacecraftState) -> SpacecraftState:
-    s.bus_voltage_v = 24.8
-    s.pcu_temp_c = 58.4
+    s.bus_voltage_v = _worse_low(s.bus_voltage_v, 24.8)
+    s.pcu_temp_c = _worse_high(s.pcu_temp_c, 58.4)
     s.power_draw_w *= 1.15
-    s.subsystem_health["Power"] = "failed"
-    s.subsystem_health["Thermal"] = "degraded"
+    _degrade_health(s, "Power", "failed")
+    _degrade_health(s, "Thermal", "degraded")
     return s
 
 def _apply_rw_fault(s: SpacecraftState) -> SpacecraftState:
-    s.rw_speed_rpm = 380.0
-    s.attitude_error_arcsec = 7.8
-    s.sun_pointing_error_deg = 0.42
+    s.rw_speed_rpm = _worse_low(s.rw_speed_rpm, 380.0)
+    s.attitude_error_arcsec = _worse_high(s.attitude_error_arcsec, 7.8)
+    s.sun_pointing_error_deg = _worse_high(s.sun_pointing_error_deg, 0.42)
     s.adcs_mode = "degraded"
-    s.subsystem_health["ADCS"] = "failed"
+    _degrade_health(s, "ADCS", "failed")
     s.solar_output_w *= 0.88  # off-sun pointing reduces solar
     return s
 
 def _apply_spectrometer_fault(s: SpacecraftState) -> SpacecraftState:
     s.spectrometer_status = "failed"
     s.spectrometer_output = None
-    s.subsystem_health["Science"] = "failed"
+    _degrade_health(s, "Science", "failed")
     return s
 
 def _apply_comms_dropout(s: SpacecraftState) -> SpacecraftState:
-    s.signal_strength_dbm = -124.6
-    s.link_margin_db = -1.4
-    s.data_rate_mbps = 0.115
+    s.signal_strength_dbm = _worse_low(s.signal_strength_dbm, -124.6)
+    s.link_margin_db = _worse_low(s.link_margin_db, -1.4)
+    s.data_rate_mbps = _worse_low(s.data_rate_mbps, 0.115)
     s.antenna_mode = "lga_fallback"
-    s.subsystem_health["Communications"] = "failed"
+    _degrade_health(s, "Communications", "failed")
     return s
 
 def _apply_thermal_runaway(s: SpacecraftState) -> SpacecraftState:
-    s.pcu_temp_c = 71.2
-    s.bus_temp_c = 38.6
-    s.instrument_temp_c = 29.1
-    s.subsystem_health["Thermal"] = "failed"
-    s.subsystem_health["Power"] = "degraded"
+    s.pcu_temp_c = _worse_high(s.pcu_temp_c, 71.2)
+    s.bus_temp_c = _worse_high(s.bus_temp_c, 38.6)
+    s.instrument_temp_c = _worse_high(s.instrument_temp_c, 29.1)
+    _degrade_health(s, "Thermal", "failed")
+    _degrade_health(s, "Power", "degraded")
     s.solar_output_w *= 0.82
-    s.bus_voltage_v = 26.2
+    s.bus_voltage_v = _worse_low(s.bus_voltage_v, 26.2)
     return s

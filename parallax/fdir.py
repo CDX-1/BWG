@@ -80,8 +80,16 @@ FAULT_RECOVERY = {
 }
 
 
+def _stamp(seconds: int) -> str:
+    return f"T+{seconds // 60:02d}:{seconds % 60:02d}"
+
+
 def run_fdir(state: SpacecraftState) -> FDIRReport:
-    """Run the full FDIR cycle: detect → isolate → recover."""
+    """Run the full FDIR cycle: detect → isolate → recover.
+
+    Every phase iterates over all concurrently active faults, so the timeline
+    interleaves them on one monotonically increasing mission clock.
+    """
     actions = []
     # An injected custom anomaly is an operator-observed event, so it is
     # processed directly.  When no event is supplied, preserve the detector's
@@ -94,6 +102,7 @@ def run_fdir(state: SpacecraftState) -> FDIRReport:
             if rule(state):
                 detected.append(fault_id)
 
+    clock = 1
     for fault_id in detected:
         details = fault_details(state, fault_id)
         if fault_id in state.fault_metadata:
@@ -101,12 +110,24 @@ def run_fdir(state: SpacecraftState) -> FDIRReport:
         else:
             message = f"FAULT DETECTED: {fault_id.upper().replace('_', ' ')}"
         actions.append(FDIRAction(
-            timestamp="T+00:01",
+            timestamp=_stamp(clock),
             fault_id=fault_id,
             phase="detection",
             message=message,
             outcome="success",
         ))
+        clock += 1
+
+    if len(detected) > 1:
+        actions.append(FDIRAction(
+            timestamp=_stamp(clock),
+            fault_id="",
+            phase="detection",
+            message=f"COMPOUND ANOMALY: {len(detected)} concurrent faults. "
+                    f"Recovery sequences arbitrated for power and thermal contention.",
+            outcome="success",
+        ))
+        clock += 1
 
     if not detected:
         return FDIRReport(
@@ -129,14 +150,15 @@ def run_fdir(state: SpacecraftState) -> FDIRReport:
                 f"{details.get('severity', 'warning').upper()} severity pending analysis."
             )
         else:
-            isolation = FAULT_ISOLATION[fault_id]
+            isolation = FAULT_ISOLATION.get(fault_id, "Fault isolated to reporting subsystem.")
         actions.append(FDIRAction(
-            timestamp="T+00:02",
+            timestamp=_stamp(clock),
             fault_id=fault_id,
             phase="isolation",
             message=f"ISOLATION: {isolation}",
             outcome="success",
         ))
+        clock += 1
 
     # Recovery pass
     for fault_id in detected:
@@ -149,14 +171,15 @@ def run_fdir(state: SpacecraftState) -> FDIRReport:
             ]
         else:
             steps = FAULT_RECOVERY.get(fault_id, [])
-        for i, (msg, outcome) in enumerate(steps):
+        for msg, outcome in steps:
             actions.append(FDIRAction(
-                timestamp=f"T+00:0{3 + i}",
+                timestamp=_stamp(clock),
                 fault_id=fault_id,
                 phase="recovery",
                 message=f"RECOVERY: {msg}",
                 outcome=outcome,
             ))
+            clock += 1
 
     # Determine mission safety
     critical_faults = {"pcu_fault", "thermal_runaway"}
@@ -164,13 +187,30 @@ def run_fdir(state: SpacecraftState) -> FDIRReport:
         state.fault_metadata.get(fault_id, {}).get("severity") == "critical"
         for fault_id in detected
     )
+    failed_subsystems = [n for n, h in state.subsystem_health.items() if h == "failed"]
     mission_safe = not (any(f in critical_faults for f in detected) or has_critical_custom_event) or \
                    all(a.outcome in ("success", "partial") for a in actions if a.phase == "recovery")
+    # Redundancy is sized for a single failure at a time: two or more failed
+    # subsystems exhausts the backup path regardless of individual recoveries.
+    if len(failed_subsystems) > 1:
+        mission_safe = False
+        actions.append(FDIRAction(
+            timestamp=_stamp(clock),
+            fault_id="",
+            phase="monitoring",
+            message=f"REDUNDANCY EXHAUSTED: {len(failed_subsystems)} subsystems failed "
+                    f"({', '.join(failed_subsystems)}). Cross-subsystem backup unavailable.",
+            outcome="failed",
+        ))
+        clock += 1
 
     # Build summary
     fault_names = [fault_details(state, f)["label"].upper() for f in detected]
-    summary = f"{len(detected)} fault(s) detected and processed: {', '.join(fault_names)}. " \
-              f"{'Mission SAFE — operating in contingency mode.' if mission_safe else 'MISSION CRITICAL — immediate ground intervention required.'}"
+    summary = f"{len(detected)} fault(s) detected and processed: {', '.join(fault_names)}. "
+    if len(detected) > 1:
+        summary += f"Concurrent faults degrade {len(set(failed_subsystems))} subsystem(s) beyond recovery margin. "
+    summary += ('Mission SAFE — operating in contingency mode.' if mission_safe
+                else 'MISSION CRITICAL — immediate ground intervention required.')
 
     return FDIRReport(
         triggered=True,
