@@ -1,0 +1,57 @@
+{
+  "scenario_id": "spectrometer_001",
+  "mission": {
+    "spacecraft": "Asteria-7",
+    "phase": "Europa flyby science pass",
+    "earth_delay_minutes": 43,
+    "transmission_budget_bytes": 25000
+  },
+  "event": {
+    "timestamp": "T+04:17:32",
+    "trigger": "spectrometer transient",
+    "description": "Unclassified 1.8-second spectral transient"
+  },
+  "telemetry_summary": {
+    "spectrometer_peak_sigma": 8.7,
+    "radiation_counter_change_percent": 41,
+    "instrument_temperature_change_c": 0.8,
+    "bus_voltage_change_percent": 0.3,
+    "checksum_errors": 2
+  },
+  "recent_commands": [
+    "04:14:00 START_SCIENCE_CAPTURE",
+    "04:16:50 SET_COMPRESSION_MODE HIGH"
+  ],
+  "available_evidence": [
+    {
+      "id": "raw_spectrum",
+      "size_bytes": 14000,
+      "description": "Raw spectral frames from T-3s to T+3s"
+    },
+    {
+      "id": "radiation_window",
+      "size_bytes": 5000,
+      "description": "Radiation counter data from T-30s to T+30s"
+    },
+    {
+      "id": "thermal_window",
+      "size_bytes": 4000,
+      "description": "Instrument thermal telemetry"
+    },
+    {
+      "id": "packet_checksums",
+      "size_bytes": 2500,
+      "description": "Packet integrity and sequencing log"
+    },
+    {
+      "id": "camera_thumbnail",
+      "size_bytes": 8000,
+      "description": "Context camera thumbnail"
+    },
+    {
+      "id": "power_window",
+      "size_bytes": 3500,
+      "description": "Power subsystem telemetry"
+    }
+  ]
+}

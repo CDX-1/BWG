@@ -1,0 +1,117 @@
+{
+  "event_summary": "Unclassified 1.8-second spectral transient at T+04:17:32 coinciding with a 41% increase in radiation counter readings and 2 checksum errors.",
+  "resolution_status": "unresolved",
+  "hypotheses": [
+    {
+      "name": "External Radiation Event",
+      "confidence": "medium",
+      "supporting_evidence": [
+        "radiation_window"
+      ],
+      "contradicting_evidence": [],
+      "evidence_needed": [
+        "raw_spectrum",
+        "radiation_window"
+      ]
+    },
+    {
+      "name": "Single-Event Upset (SEU)",
+      "confidence": "medium",
+      "supporting_evidence": [
+        "raw_spectrum",
+        "radiation_window"
+      ],
+      "contradicting_evidence": [],
+      "evidence_needed": [
+        "raw_spectrum",
+        "radiation_window"
+      ]
+    },
+    {
+      "name": "Data Corruption/Software Error",
+      "confidence": "low",
+      "supporting_evidence": [
+        "packet_checksums"
+      ],
+      "contradicting_evidence": [
+        "radiation_window"
+      ],
+      "evidence_needed": [
+        "packet_checksums"
+      ]
+    }
+  ],
+  "preservation_priorities": [
+    {
+      "evidence_id": "raw_spectrum",
+      "priority": 1,
+      "reason": "Primary instrument data required to analyze the nature of the transient.",
+      "supports_hypotheses": [
+        "External Radiation Event",
+        "Single-Event Upset (SEU)",
+        "Data Corruption/Software Error"
+      ],
+      "consequence_if_lost": "Loss of primary spectral evidence prevents distinguishing between a real event and an SEU."
+    },
+    {
+      "evidence_id": "radiation_window",
+      "priority": 2,
+      "reason": "Necessary to establish temporal correlation with the spectrometer transient.",
+      "supports_hypotheses": [
+        "External Radiation Event",
+        "Single-Event Upset (SEU)"
+      ],
+      "consequence_if_lost": "Unable to confirm if the radiation increase was concurrent or coincident noise."
+    },
+    {
+      "evidence_id": "packet_checksums",
+      "priority": 3,
+      "reason": "Provides evidence of data integrity issues coinciding with the event.",
+      "supports_hypotheses": [
+        "Data Corruption/Software Error"
+      ],
+      "consequence_if_lost": "Unable to determine if checksum errors are related to the transient or unrelated noise."
+    },
+    {
+      "evidence_id": "power_window",
+      "priority": 4,
+      "reason": "Used to rule out bus voltage fluctuations as a cause for the transient.",
+      "supports_hypotheses": [
+        "Data Corruption/Software Error"
+      ],
+      "consequence_if_lost": "Loss of ability to rule out power-induced instrument glitches."
+    },
+    {
+      "evidence_id": "thermal_window",
+      "priority": 5,
+      "reason": "Secondary environmental context.",
+      "supports_hypotheses": [],
+      "consequence_if_lost": "Minimal impact on primary hypothesis differentiation."
+    }
+  ],
+  "recommended_follow_up": "Perform a spectrometer calibration check to ensure no permanent degradation occurred following the transient.",
+  "compression_warning": "The command SET_COMPRESSION_MODE HIGH was issued shortly before the event. Temporal averaging or lossy compression of the radiation_window will destroy sub-second timing information, making it impossible to establish the 0-200ms lead time required to confirm a genuine external radiation event.",
+  "uncertainty_statement": "It is currently undetermined whether the spectral transient was caused by a physical external particle event, an internal SEU in the ADC, or data corruption indicated by the checksum errors. Temporal correlation between the spectrometer and radiation counter is required for differentiation.",
+  "source_references": [
+    {
+      "source_id": "SPECTROMETER-MANUAL §2.3",
+      "relevance": "Identifies ADC susceptibility to SEUs producing spurious spikes."
+    },
+    {
+      "source_id": "RADIATION-EVENTS §3.3",
+      "relevance": "Links 41% radiation increase to external particle events."
+    },
+    {
+      "source_id": "COMPRESSION-RISKS §2.1",
+      "relevance": "Warns against temporal averaging of radiation data."
+    },
+    {
+      "source_id": "RADIATION-EVENTS §2.1",
+      "relevance": "Defines the 0-200ms temporal offset for genuine radiation events."
+    },
+    {
+      "source_id": "INCIDENT-RESPONSE §2.1",
+      "relevance": "Provides priority order for evidence preservation."
+    }
+  ]
+}
