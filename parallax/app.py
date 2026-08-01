@@ -263,8 +263,19 @@ def main():
     st.markdown("---")
     _render_mission_control(state, noisy, fdir, stack_result, active_faults, stack_needed)
 
-    st.markdown("---")
-    _render_bottom_row(state, stack_result)
+    # The capsule / benchmark deep-dives are advanced-only. In simplified mode
+    # the stack panel above is the complete demo story.
+    if _is_simplified():
+        st.markdown(
+            f'<div style="text-align:center;color:{TEXT_D};font-size:0.72em;margin-top:12px;">'
+            f'Switch to <strong>Advanced</strong> to inspect deterministic-gate detail, the '
+            f'G4 evidence capsule, and the FDIR-vs-stack benchmark harness.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown("---")
+        _render_bottom_row(state, stack_result)
 
     st.markdown("---")
     st.markdown(
@@ -289,14 +300,19 @@ def _init_state():
         "sentinel_ok":       False,
         "sentinel_last_run": 0.0,
         "capsule_budget_kb": 25,
+        "view_mode":         "simplified",   # "simplified" | "advanced"
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
+def _is_simplified() -> bool:
+    return st.session_state.get("view_mode", "simplified") == "simplified"
+
+
 def _render_header(active_faults, fault_active):
-    ha, hb, hc = st.columns([1, 2, 1])
+    ha, hb, hc, hd = st.columns([1.1, 1.7, 0.9, 0.9])
     with ha:
         st.markdown(
             f'<div style="font-weight:900;color:{NAVY};font-size:1.8em;letter-spacing:0.05em;'
@@ -314,6 +330,20 @@ def _render_header(active_faults, fault_active):
             unsafe_allow_html=True,
         )
     with hc:
+        # View-mode toggle. Radio is compact enough and reflects state clearly.
+        mode = st.radio(
+            "View",
+            options=["Simplified", "Advanced"],
+            index=0 if _is_simplified() else 1,
+            horizontal=True,
+            label_visibility="collapsed",
+            key="view_mode_radio",
+        )
+        new_mode = "simplified" if mode == "Simplified" else "advanced"
+        if new_mode != st.session_state.get("view_mode"):
+            st.session_state["view_mode"] = new_mode
+            st.rerun()
+    with hd:
         if len(active_faults) > 1:
             badge = _badge(f"⚡ {len(active_faults)} CONCURRENT FAULTS", RED)
         elif fault_active:
@@ -371,8 +401,11 @@ def _render_mission_control(state, noisy, fdir, stack_result, active_faults, sta
     # ── G0 SENTINEL STRIP (continuous watch) ─────────────────────────────────
     _render_sentinel_strip()
 
-    with st.expander("⚙  Hardware Link — Board Connection & Sensor Traces", expanded=False):
-        _render_hardware_expander()
+    # Hardware-link expander is advanced-only — a demo audience does not need
+    # to see the serial port picker or the raw MPU6050 traces.
+    if not _is_simplified():
+        with st.expander("⚙  Hardware Link — Board Connection & Sensor Traces", expanded=False):
+            _render_hardware_expander()
 
     st.markdown("---")
 
@@ -450,7 +483,13 @@ def _render_fdir_column(state, fdir, active_faults):
         ), unsafe_allow_html=True)
 
     if fdir and fdir.triggered:
-        for a in fdir.actions:
+        # Simplified view: only show detection + isolation lines. The full
+        # recovery timeline reads like a script log, which is exactly what
+        # the Gemma stack replaces — no need to bury the audience in it.
+        actions = fdir.actions
+        if _is_simplified():
+            actions = [a for a in actions if a.phase in ("detection", "isolation", "monitoring")]
+        for a in actions:
             c   = PHASE_COLOR.get(a.phase, TEXT_D)
             sym = OUTCOME_SYM.get(a.outcome, "")
             edge = FAULT_COLOR.get(a.fault_id, c) if len(active_faults) > 1 else c
@@ -492,6 +531,8 @@ def _render_stack_column(state, fdir, stack_result: StackResult | None, stack_ne
         ), unsafe_allow_html=True)
         return
 
+    simplified = _is_simplified()
+
     # Live/cache status line + pipeline strip
     if st.session_state.get("gemma_live"):
         st.markdown(
@@ -504,19 +545,20 @@ def _render_stack_column(state, fdir, stack_result: StackResult | None, stack_ne
         st.markdown(
             f'<div style="margin-bottom:6px;">{_badge("⛃ " + label, AMBER, sm=True)}</div>'
             + (f'<div style="font-size:0.68em;color:{TEXT_D};line-height:1.45;'
-               f'margin:-2px 0 6px;">{reason}</div>' if reason else ""),
+               f'margin:-2px 0 6px;">{reason}</div>' if reason and not simplified else ""),
             unsafe_allow_html=True,
         )
 
     stack_ui.render_pipeline_strip(stack_result.traces, stack_result.wall_time_s,
-                                    stack_result.plan_iterations)
+                                    stack_result.plan_iterations, simplified=simplified)
 
     # G1: competing hypotheses
-    stack_ui.render_diagnosis(stack_result.diagnosis)
+    stack_ui.render_diagnosis(stack_result.diagnosis, simplified=simplified)
 
     # G2 plan + gate outcomes
     if stack_result.plan and stack_result.validation is not None:
-        stack_ui.render_plan_and_gates(stack_result.plan, stack_result.validation, stack_result.verdict)
+        stack_ui.render_plan_and_gates(stack_result.plan, stack_result.validation,
+                                        stack_result.verdict, simplified=simplified)
 
     # G3 adjudicator verdict
     stack_ui.render_adjudicator(stack_result.verdict)

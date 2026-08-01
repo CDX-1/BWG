@@ -82,8 +82,12 @@ def _pill(text, color):
 
 # ── Pipeline strip (top of the panel) ───────────────────────────────────────
 
-def render_pipeline_strip(traces: list[TierTrace], wall_time_s: float, plan_iterations: int):
-    """Compact five-icon strip showing what actually ran in this stack pass."""
+def render_pipeline_strip(traces: list[TierTrace], wall_time_s: float,
+                            plan_iterations: int, simplified: bool = False):
+    """Compact five-icon strip showing what actually ran in this stack pass.
+
+    In simplified mode: tier name + status badge only, no latency/tokens/note.
+    """
     if not traces:
         return
     tier_order = ["G0", "G1", "G2", "G3", "G4"]
@@ -110,26 +114,50 @@ def render_pipeline_strip(traces: list[TierTrace], wall_time_s: float, plan_iter
         badge_color = GREEN if tr.is_live else AMBER
         if not tr.ok:
             badge_bg, badge_color = "ERROR", RED
-        latency = f"{tr.latency_s:.2f}s" if tr.latency_s > 0 else "—"
-        cells.append(
-            f'<div style="flex:1;background:{WHITE};border:1px solid {edge}55;border-top:3px solid {edge};'
-            f'border-radius:8px;padding:8px 10px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.05);">'
-            f'<div style="color:{color};font-size:0.7em;font-weight:800;letter-spacing:0.09em;">'
-            f'{tier} · {TIER_LABELS[tier]}</div>'
-            f'<div style="margin-top:4px;">'
-            f'<span style="font-size:0.65em;color:{badge_color};font-weight:700;">{badge_bg}</span>'
-            f'&nbsp;&middot;&nbsp;<span style="color:{TEXT_M};font-size:0.68em;font-family:monospace;">{latency}</span>'
-            f'&nbsp;&middot;&nbsp;<span style="color:{TEXT_D};font-size:0.65em;font-family:monospace;">{tr.tokens_out}t</span>'
-            f'</div>'
-            f'<div style="color:{TEXT_M};font-size:0.66em;margin-top:3px;line-height:1.3;">{tr.note or ""}</div>'
-            + (f'<div style="color:{RED};font-size:0.62em;margin-top:2px;line-height:1.3;">{tr.error}</div>' if tr.error else "")
-            + '</div>'
-        )
+
+        if simplified:
+            cells.append(
+                f'<div style="flex:1;background:{WHITE};border:1px solid {edge}55;border-top:3px solid {edge};'
+                f'border-radius:8px;padding:9px 6px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.05);">'
+                f'<div style="color:{color};font-size:0.72em;font-weight:800;letter-spacing:0.06em;">{tier}</div>'
+                f'<div style="color:{TEXT_M};font-size:0.62em;margin-top:2px;">{TIER_LABELS[tier]}</div>'
+                f'<div style="margin-top:5px;">'
+                f'<span style="font-size:0.62em;color:{badge_color};font-weight:800;">{badge_bg}</span>'
+                f'</div>'
+                f'</div>'
+            )
+        else:
+            latency = f"{tr.latency_s:.2f}s" if tr.latency_s > 0 else "—"
+            cells.append(
+                f'<div style="flex:1;background:{WHITE};border:1px solid {edge}55;border-top:3px solid {edge};'
+                f'border-radius:8px;padding:8px 10px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.05);">'
+                f'<div style="color:{color};font-size:0.7em;font-weight:800;letter-spacing:0.09em;">'
+                f'{tier} · {TIER_LABELS[tier]}</div>'
+                f'<div style="margin-top:4px;">'
+                f'<span style="font-size:0.65em;color:{badge_color};font-weight:700;">{badge_bg}</span>'
+                f'&nbsp;&middot;&nbsp;<span style="color:{TEXT_M};font-size:0.68em;font-family:monospace;">{latency}</span>'
+                f'&nbsp;&middot;&nbsp;<span style="color:{TEXT_D};font-size:0.65em;font-family:monospace;">{tr.tokens_out}t</span>'
+                f'</div>'
+                f'<div style="color:{TEXT_M};font-size:0.66em;margin-top:3px;line-height:1.3;">{tr.note or ""}</div>'
+                + (f'<div style="color:{RED};font-size:0.62em;margin-top:2px;line-height:1.3;">{tr.error}</div>' if tr.error else "")
+                + '</div>'
+            )
 
     st.markdown(
         f'<div style="display:flex;gap:6px;">{"".join(cells)}</div>',
         unsafe_allow_html=True,
     )
+
+    if simplified:
+        # A single-line footnote only when there was a veto retry, since that
+        # moment is a load-bearing part of the demo story.
+        if plan_iterations > 1:
+            st.markdown(
+                f'<div style="text-align:right;color:{AMBER};font-size:0.72em;'
+                f'margin-top:4px;font-weight:700;">G3 vetoed the first plan — G2 re-planned</div>',
+                unsafe_allow_html=True,
+            )
+        return
 
     footnote_bits = [f"stack wall time <strong>{wall_time_s:.2f}s</strong>"]
     if plan_iterations > 1:
@@ -143,7 +171,8 @@ def render_pipeline_strip(traces: list[TierTrace], wall_time_s: float, plan_iter
 
 # ── G1 diagnosis ────────────────────────────────────────────────────────────
 
-def render_diagnosis(diag: Diagnosis):
+def render_diagnosis(diag: Diagnosis, simplified: bool = False):
+    """G1 competing hypotheses. Simplified mode hides supporting/contradicting details."""
     if not diag:
         return
     st.markdown(
@@ -151,31 +180,49 @@ def render_diagnosis(diag: Diagnosis):
         f'margin:10px 0 4px;">G1 · COMPETING HYPOTHESES</div>',
         unsafe_allow_html=True,
     )
-    st.markdown(
-        f'<div style="font-size:0.75em;color:{TEXT_M};margin-bottom:6px;line-height:1.5;">{diag.summary}</div>',
-        unsafe_allow_html=True,
-    )
-    for h in diag.hypotheses:
+    if not simplified:
+        st.markdown(
+            f'<div style="font-size:0.75em;color:{TEXT_M};margin-bottom:6px;line-height:1.5;">{diag.summary}</div>',
+            unsafe_allow_html=True,
+        )
+    hypotheses = diag.hypotheses if not simplified else diag.hypotheses[:2]
+    for h in hypotheses:
         conf_c = {"high": GREEN, "medium": AMBER, "low": TEXT_D}.get(h.confidence, TEXT_D)
         cites = " ".join(_pill(c, NAVY) for c in h.citations) or _pill("uncited", RED)
-        supp = ", ".join(h.supporting_evidence) or "—"
-        contra = ", ".join(h.contradicting_evidence) or "—"
-        st.markdown(_card(
-            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
-            f'<span style="font-weight:700;font-size:0.8em;color:{TEXT};">{h.name}</span>'
-            f'{_badge(h.confidence.upper(), conf_c, sm=True)}</div>'
-            f'<div style="font-size:0.71em;color:{TEXT_M};margin:3px 0;">'
-            f'<strong>supports:</strong> {supp}</div>'
-            f'<div style="font-size:0.71em;color:{TEXT_M};margin:3px 0;">'
-            f'<strong>contradicts:</strong> {contra}</div>'
-            f'<div style="margin-top:6px;">{cites}</div>',
-            left_color=conf_c,
-        ), unsafe_allow_html=True)
+
+        if simplified:
+            st.markdown(_card(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                f'<span style="font-weight:700;font-size:0.82em;color:{TEXT};">{h.name}</span>'
+                f'{_badge(h.confidence.upper(), conf_c, sm=True)}</div>'
+                f'<div style="margin-top:5px;">{cites}</div>',
+                left_color=conf_c,
+            ), unsafe_allow_html=True)
+        else:
+            supp = ", ".join(h.supporting_evidence) or "—"
+            contra = ", ".join(h.contradicting_evidence) or "—"
+            st.markdown(_card(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
+                f'<span style="font-weight:700;font-size:0.8em;color:{TEXT};">{h.name}</span>'
+                f'{_badge(h.confidence.upper(), conf_c, sm=True)}</div>'
+                f'<div style="font-size:0.71em;color:{TEXT_M};margin:3px 0;">'
+                f'<strong>supports:</strong> {supp}</div>'
+                f'<div style="font-size:0.71em;color:{TEXT_M};margin:3px 0;">'
+                f'<strong>contradicts:</strong> {contra}</div>'
+                f'<div style="margin-top:6px;">{cites}</div>',
+                left_color=conf_c,
+            ), unsafe_allow_html=True)
 
 
 # ── G2 plan + validator gates ───────────────────────────────────────────────
 
-def render_plan_and_gates(plan: RecoveryPlan, validation: ValidationReport, verdict: AdjudicatorVerdict):
+def render_plan_and_gates(plan: RecoveryPlan, validation: ValidationReport,
+                            verdict: AdjudicatorVerdict, simplified: bool = False):
+    """G2 recovery plan + validator gate outcomes.
+
+    Simplified: numbered action list, one-word pass/fail per step, no rationale
+    or citations. Advanced: full per-step gate detail + rationale + citations.
+    """
     if not plan:
         return
 
@@ -184,12 +231,12 @@ def render_plan_and_gates(plan: RecoveryPlan, validation: ValidationReport, verd
         f'margin:16px 0 4px;">G2 · RECOVERY PLAN</div>',
         unsafe_allow_html=True,
     )
-    st.markdown(
-        f'<div style="font-size:0.75em;color:{TEXT_M};margin-bottom:6px;line-height:1.5;">{plan.summary}</div>',
-        unsafe_allow_html=True,
-    )
+    if not simplified:
+        st.markdown(
+            f'<div style="font-size:0.75em;color:{TEXT_M};margin-bottom:6px;line-height:1.5;">{plan.summary}</div>',
+            unsafe_allow_html=True,
+        )
 
-    # Per-step cards, with the gate outcomes for that step laid out inline.
     gate_by_step: dict[int, list] = {}
     for gr in validation.per_step:
         gate_by_step.setdefault(gr.step_index, []).append(gr)
@@ -197,41 +244,52 @@ def render_plan_and_gates(plan: RecoveryPlan, validation: ValidationReport, verd
     for idx, step in enumerate(plan.steps):
         step_gates = gate_by_step.get(idx, [])
         rejected_here = validation.rejected_step_index == idx and not validation.approved
-
-        gate_row = []
-        for gr in step_gates:
-            color = GREEN if gr.passed else RED
-            symbol = "✓" if gr.passed else "✗"
-            gate_row.append(_pill(f"{symbol} {gr.gate}", color))
-        gate_html = " ".join(gate_row)
+        all_passed = all(gr.passed for gr in step_gates)
 
         params_str = ", ".join(f"{k}={v}" for k, v in (step.params or {}).items())
         header = f"{idx + 1}. {step.action}({params_str})"
         edge = RED if rejected_here else (NAVY if verdict and verdict.approved else AMBER)
-        cites = " ".join(_pill(c, NAVY) for c in step.citations) or ""
 
-        st.markdown(_card(
-            f'<div style="font-weight:700;font-size:0.8em;color:{TEXT};margin-bottom:4px;'
-            f'font-family:ui-monospace,Menlo,monospace;">{header}</div>'
-            f'<div style="font-size:0.72em;color:{TEXT_M};margin:4px 0;line-height:1.5;">{step.rationale}</div>'
-            f'<div style="margin:6px 0;">{gate_html}</div>'
-            + (f'<div style="margin:4px 0;">{cites}</div>' if cites else "")
-            + (f'<div style="font-size:0.72em;color:{RED};margin-top:6px;font-weight:600;">'
-               f'gate reason: {validation.rejected_reason}</div>' if rejected_here else ""),
-            left_color=edge,
-        ), unsafe_allow_html=True)
+        if simplified:
+            status = _pill("✓ safe" if all_passed else "✗ blocked",
+                            GREEN if all_passed else RED)
+            st.markdown(_card(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                f'<span style="font-family:ui-monospace,Menlo,monospace;font-weight:700;'
+                f'font-size:0.8em;color:{TEXT};">{header}</span>'
+                f'{status}</div>',
+                left_color=edge, padding="8px 12px",
+            ), unsafe_allow_html=True)
+        else:
+            gate_row = []
+            for gr in step_gates:
+                color = GREEN if gr.passed else RED
+                symbol = "✓" if gr.passed else "✗"
+                gate_row.append(_pill(f"{symbol} {gr.gate}", color))
+            gate_html = " ".join(gate_row)
+            cites = " ".join(_pill(c, NAVY) for c in step.citations) or ""
+            st.markdown(_card(
+                f'<div style="font-weight:700;font-size:0.8em;color:{TEXT};margin-bottom:4px;'
+                f'font-family:ui-monospace,Menlo,monospace;">{header}</div>'
+                f'<div style="font-size:0.72em;color:{TEXT_M};margin:4px 0;line-height:1.5;">{step.rationale}</div>'
+                f'<div style="margin:6px 0;">{gate_html}</div>'
+                + (f'<div style="margin:4px 0;">{cites}</div>' if cites else "")
+                + (f'<div style="font-size:0.72em;color:{RED};margin-top:6px;font-weight:600;">'
+                   f'gate reason: {validation.rejected_reason}</div>' if rejected_here else ""),
+                left_color=edge,
+            ), unsafe_allow_html=True)
 
-    # Overall validator summary
-    val_color = GREEN if validation.approved else RED
-    st.markdown(
-        f'<div style="background:{val_color}0d;border:1.5px solid {val_color}40;'
-        f'border-radius:8px;padding:8px 12px;margin-top:8px;">'
-        f'<div style="font-size:0.68em;font-weight:800;color:{TEXT_D};letter-spacing:0.08em;">'
-        f'DETERMINISTIC GATES</div>'
-        f'<div style="font-size:0.78em;color:{val_color};font-weight:700;">{validation.summary_line}</div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    if not simplified:
+        val_color = GREEN if validation.approved else RED
+        st.markdown(
+            f'<div style="background:{val_color}0d;border:1.5px solid {val_color}40;'
+            f'border-radius:8px;padding:8px 12px;margin-top:8px;">'
+            f'<div style="font-size:0.68em;font-weight:800;color:{TEXT_D};letter-spacing:0.08em;">'
+            f'DETERMINISTIC GATES</div>'
+            f'<div style="font-size:0.78em;color:{val_color};font-weight:700;">{validation.summary_line}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def render_adjudicator(verdict: AdjudicatorVerdict):

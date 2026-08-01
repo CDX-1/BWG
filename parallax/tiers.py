@@ -119,6 +119,166 @@ def _strip_json_fences(text: str) -> str:
     return text.strip()
 
 
+def _parse_json_lenient(text: str) -> dict:
+    """Parse JSON, repairing common truncation cases.
+
+    max_tokens can cut a response mid-string or mid-array. Instead of losing
+    the whole tier to a JSONDecodeError, walk the text once collecting
+    "candidate cut points" (positions just after a complete value), then try
+    them from latest to earliest, closing open containers on each attempt.
+    A partial diagnosis is worth more than none.
+    """
+    text = _strip_json_fences(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    candidates = _collect_cut_points(text)
+    last_exc: Exception | None = None
+    for pos in reversed(candidates):
+        repaired = _repair_at(text, pos)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            continue
+    raise last_exc or json.JSONDecodeError("no recoverable structure", text, 0)
+
+
+def _collect_cut_points(text: str) -> list[int]:
+    """Positions just after any complete JSON value at any nesting level.
+
+    A "cut point" is where the prefix ending at that character could be
+    completed into valid JSON by only appending closing braces/brackets.
+    """
+    points: list[int] = []
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if in_string:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+                points.append(i)   # end of a string value or key
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch in "}]":
+            points.append(i)
+        elif ch in "0123456789":
+            points.append(i)
+        elif ch == "e" and i + 4 < len(text) and text[i:i+4] == "true":
+            points.append(i + 3)
+        elif ch == "n" and text[i:i+4] == "null":
+            points.append(i + 3)
+        elif ch == "e" and i + 5 < len(text) and text[i-4:i+1] == "false":
+            points.append(i)
+    return points
+
+
+def _repair_at(text: str, pos: int) -> str:
+    """Trim to `pos+1` and synthesise closers plus drop any orphan trailing key."""
+    prefix = text[: pos + 1]
+    prefix = _drop_orphan_trailing(prefix)
+
+    # Recompute the open stack over the trimmed prefix and close it.
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for ch in prefix:
+        if escape:
+            escape = False
+            continue
+        if in_string:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack and stack[-1] == ch:
+            stack.pop()
+    return prefix + "".join(reversed(stack))
+
+
+def _drop_orphan_trailing(prefix: str) -> str:
+    """Remove any dangling `,`, `:`, or `"key"[:]` at the end of the prefix.
+
+    Repeats: `{"a":1,"b":` → `{"a":1` (dropped `,"b":`). Then closers appended.
+    """
+    changed = True
+    while changed:
+        changed = False
+        stripped = prefix.rstrip()
+        if stripped != prefix:
+            prefix = stripped
+            changed = True
+        # Trailing comma or colon — bare separator with no value coming.
+        if prefix and prefix[-1] in ",:":
+            prefix = prefix[:-1]
+            changed = True
+            continue
+        # Trailing string that is actually a key (immediately before a colon
+        # that was never followed by a value). If the last string in the
+        # prefix isn't followed by `:value`, it must be a value that closed
+        # cleanly; nothing to do. We detect a "hanging key" by scanning back
+        # past the last quoted string and checking whether the character
+        # before the opening quote is `,` or `{` (making it a key position).
+        if prefix.endswith('"') and _last_string_is_key(prefix):
+            prefix = _drop_last_string(prefix)
+            changed = True
+    return prefix
+
+
+def _last_string_is_key(prefix: str) -> bool:
+    """True if the last closed string sits in a key position."""
+    # Find the opening quote of the last string in prefix.
+    if not prefix.endswith('"'):
+        return False
+    i = len(prefix) - 2
+    escape_run = 0
+    while i >= 0:
+        if prefix[i] == '"' and escape_run % 2 == 0:
+            break
+        escape_run = escape_run + 1 if prefix[i] == "\\" else 0
+        i -= 1
+    if i < 0:
+        return False
+    j = i - 1
+    while j >= 0 and prefix[j] in " \t\n":
+        j -= 1
+    return j >= 0 and prefix[j] in "{,"
+
+
+def _drop_last_string(prefix: str) -> str:
+    """Remove the last quoted string (assumed a hanging key) plus a leading comma."""
+    i = len(prefix) - 2
+    escape_run = 0
+    while i >= 0:
+        if prefix[i] == '"' and escape_run % 2 == 0:
+            break
+        escape_run = escape_run + 1 if prefix[i] == "\\" else 0
+        i -= 1
+    if i < 0:
+        return prefix
+    j = i - 1
+    while j >= 0 and prefix[j] in " \t\n":
+        j -= 1
+    if j >= 0 and prefix[j] == ",":
+        return prefix[:j]
+    return prefix[:i]
+
+
 # ── Tier result container ────────────────────────────────────────────────────
 
 @dataclass
@@ -179,7 +339,7 @@ def run_sentinel(featurised_window: dict) -> TierResult:
             prompt, system=_SENTINEL_SYSTEM,
             temperature=0.0, max_tokens=60, json_mode=True, timeout_s=8.0,
         )
-        data = json.loads(_strip_json_fences(content))
+        data = _parse_json_lenient(content)
         verdict = SentinelVerdict.model_validate(data)
     except Exception as exc:
         return TierResult(
@@ -201,20 +361,19 @@ def run_sentinel(featurised_window: dict) -> TierResult:
 
 _DIAGNOSTICIAN_SYSTEM = (
     "You are G1 DIAGNOSTICIAN, isolating an anomaly on the Asteria-7 "
-    "spacecraft. Produce 2 to 4 COMPETING explanations for the observed state.\n\n"
+    "spacecraft. Produce 2 to 3 COMPETING explanations for the observed state.\n\n"
     "Rules:\n"
     "- Never collapse to a single answer. Preserve uncertainty.\n"
     "- Each hypothesis MUST cite at least one procedure section tag like "
     "[INCIDENT-RESPONSE §2.1] drawn from the retrieved procedures below.\n"
-    "- List concrete supporting evidence (field names from the state) and "
-    "contradicting evidence when known.\n"
+    "- Keep every string under 20 words. Keep evidence arrays under 4 items.\n"
     "- Confidence: low, medium, or high — never absolute.\n\n"
     "Reply ONLY as JSON matching this schema:\n"
     "{\n"
-    "  \"summary\": \"...\",\n"
+    "  \"summary\": \"one sentence\",\n"
     "  \"hypotheses\": [\n"
-    "    {\"name\": \"...\", \"confidence\": \"low|medium|high\",\n"
-    "     \"supporting_evidence\": [\"...\"], \"contradicting_evidence\": [\"...\"],\n"
+    "    {\"name\": \"short\", \"confidence\": \"low|medium|high\",\n"
+    "     \"supporting_evidence\": [\"field_name\"], \"contradicting_evidence\": [\"field_name\"],\n"
     "     \"citations\": [\"[TAG §x.y]\"]}\n"
     "  ],\n"
     "  \"all_hypotheses_cited\": true\n"
@@ -246,10 +405,21 @@ def run_diagnostician(
     try:
         content, tokens_out = _call_gemma(
             user_prompt, system=_DIAGNOSTICIAN_SYSTEM,
-            temperature=0.4, max_tokens=650, json_mode=True, timeout_s=25.0,
+            temperature=0.4, max_tokens=1100, json_mode=True, timeout_s=30.0,
         )
-        data = json.loads(_strip_json_fences(content))
+        data = _parse_json_lenient(content)
+        # Fill in absent optional fields so a truncated payload still validates.
+        data.setdefault("summary", "(diagnosis summary truncated)")
+        data.setdefault("hypotheses", [])
+        for h in data["hypotheses"]:
+            h.setdefault("supporting_evidence", [])
+            h.setdefault("contradicting_evidence", [])
+            h.setdefault("citations", [])
+            h.setdefault("confidence", "low")
         diagnosis = Diagnosis.model_validate(data)
+        if not diagnosis.hypotheses:
+            # Truncated to nothing usable — fall through to synthesis.
+            raise ValueError("no hypotheses recovered from response")
         # Recompute the cited flag ourselves — the model is unreliable at self-checks.
         diagnosis.all_hypotheses_cited = all(bool(h.citations) for h in diagnosis.hypotheses)
     except Exception as exc:
@@ -372,7 +542,7 @@ def run_flight_director(
             user_prompt, system=system,
             temperature=0.2, max_tokens=550, json_mode=True, timeout_s=25.0,
         )
-        data = json.loads(_strip_json_fences(content))
+        data = _parse_json_lenient(content)
         plan = RecoveryPlan.model_validate(data)
     except Exception as exc:
         plan = _synthesize_plan(featurised_state, diagnosis)
@@ -481,7 +651,7 @@ def run_adjudicator(
             user_prompt, system=_ADJUDICATOR_SYSTEM,
             temperature=0.0, max_tokens=250, json_mode=True, timeout_s=15.0,
         )
-        data = json.loads(_strip_json_fences(content))
+        data = _parse_json_lenient(content)
         verdict = AdjudicatorVerdict.model_validate(data)
     except Exception as exc:
         # A silent adjudicator is worse than a loud one — if G3 can't run,
@@ -547,7 +717,7 @@ def run_archivist(
             user_prompt, system=_ARCHIVIST_SYSTEM,
             temperature=0.1, max_tokens=800, json_mode=True, timeout_s=20.0,
         )
-        data = json.loads(_strip_json_fences(content))
+        data = _parse_json_lenient(content)
         packing = ArchivistPacking.model_validate(data)
     except Exception as exc:
         packing = _synthesize_archivist(hypotheses, available_evidence)
