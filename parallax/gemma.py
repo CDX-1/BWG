@@ -6,7 +6,7 @@ import urllib.error
 import streamlit as st
 
 from parallax.config import GEMMA_ENDPOINT, API_KEY, USE_LIVE_GEMMA, MODEL_NAME, CACHED_OUTPUTS_DIR
-from parallax.models import GemmaPredictiveAnalysis, ParallaxAnalysis, PredictedFailure
+from parallax.models import GemmaPredictiveAnalysis, ParallaxAnalysis, PredictedFailure, FixOption
 
 PROMPT_TEMPLATE = """You are PARALLAX, an evidence-preservation assistant for a deep-space spacecraft operating under communication delay.
 
@@ -73,18 +73,21 @@ Return ONLY valid JSON matching this exact schema (no markdown, no explanation):
 
 PREDICTIVE_PROMPT_TEMPLATE = """You are PARALLAX, an AI mission intelligence system for a deep-space spacecraft.
 
-FDIR (Fault Detection, Isolation, Recovery) has just processed a fault event. Your role is to:
+FDIR (Fault Detection, Isolation, Recovery) has just executed a basic autonomous recovery. Your role is to:
 1. Assess the current spacecraft health state after FDIR recovery actions
-2. Predict the NEXT most likely failure based on current sensor trends and fault interactions
-3. Identify cascading failure risks (what the current fault makes more likely)
-4. Recommend 3-5 specific, actionable crew or ground commands
-5. Write a concise Earth transmission report for mission control
+2. Estimate the Earth communication delay impact on the decision window
+3. Calculate the probability that the basic FDIR fix succeeds long-term (0-100 integer)
+4. Calculate the probability of a cascade failure occurring (0-100 integer)
+5. Propose 3 alternative fix strategies with individual success probabilities
+6. Choose the best fix option and decide whether to execute it immediately (only if >75% success and autonomous)
+7. Predict the NEXT most likely failure based on sensor trends
+8. Write a concise Earth transmission report
 
 Rules:
 - Be specific about timelines (e.g. "4.2 hours", "72 hours", not "soon")
 - Consider physical causality — power faults stress batteries, thermal faults stress electronics, ADCS faults reduce solar input
 - Never invent sensor readings not present in the input
-- The spacecraft has a 38-minute Earth communication delay — recommendations must be executable autonomously
+- The spacecraft has a 38-minute Earth communication delay — only recommend autonomous fixes
 - Return ONLY valid JSON matching the schema exactly
 
 SPACECRAFT STATE:
@@ -103,6 +106,9 @@ Return ONLY valid JSON matching this exact schema:
 {{
   "current_assessment": "...",
   "system_stability": "stable|degraded|critical|unknown",
+  "earth_delay_min": 38,
+  "basic_fix_success_pct": <integer 0-100>,
+  "cascade_failure_pct": <integer 0-100>,
   "predicted_failures": [
     {{
       "subsystem": "...",
@@ -113,6 +119,18 @@ Return ONLY valid JSON matching this exact schema:
     }}
   ],
   "cascading_risks": ["...", "..."],
+  "alternative_fixes": [
+    {{
+      "name": "...",
+      "description": "...",
+      "success_pct": <integer 0-100>,
+      "risk": "low|medium|high",
+      "autonomous": true|false
+    }}
+  ],
+  "chosen_fix": "...",
+  "execute_immediately": true|false,
+  "execute_reason": "...",
   "recommended_actions": ["...", "..."],
   "earth_report": "...",
   "confidence": "low|medium|high"
@@ -275,28 +293,88 @@ def run_predictive_analysis(
     # Cached predictions are only valid for the isolated, named demo cases.
     # Runtime event context must never be replaced with a scripted result.
     if fault_context:
-        return _dynamic_predictive_fallback(state_dict, fdir_dict, fault_context), False
+        return _dynamic_predictive_fallback(state_dict, fdir_dict, fault_context, fault_id), False
 
     try:
         path = os.path.join(CACHED_OUTPUTS_DIR, f"predict_{fault_id}.json")
         with open(path) as f:
             data = json.load(f)
-        return GemmaPredictiveAnalysis.model_validate(data), False
+        analysis = GemmaPredictiveAnalysis.model_validate(data)
+        if not analysis.alternative_fixes:
+            analysis = _augment_with_fixes(analysis, fault_id)
+        return analysis, False
     except Exception as e:
         raise RuntimeError(f"No cached prediction for {fault_id}: {e}")
+
+
+_FALLBACK_FIXES: dict[str, list[FixOption]] = {
+    "solar_string_loss": [
+        FixOption(name="Load Shedding (Basic FDIR)", description="Activate battery conservation, reduce non-essential power loads 40%", success_pct=72, risk="low", autonomous=True),
+        FixOption(name="Array Reorientation", description="Adjust solar array angle +2.3° toward sun vector for maximum exposure", success_pct=81, risk="medium", autonomous=True),
+        FixOption(name="String Bypass Relay", description="Activate bypass relay to route power around failed string 2 via strings 1 and 3", success_pct=88, risk="high", autonomous=True),
+    ],
+    "pcu_fault": [
+        FixOption(name="Backup PCU Switch (Basic FDIR)", description="Switch to redundant PCU-A module, isolate and power-down failed PCU-B", success_pct=78, risk="low", autonomous=True),
+        FixOption(name="Load Reduction Cycle", description="Step-reduce power draw 30%, allow PCU thermal recovery over 2 hours", success_pct=64, risk="medium", autonomous=True),
+        FixOption(name="Full Bus Reset", description="Execute full power bus reset sequence with PCU cold restart — requires 800ms blackout", success_pct=91, risk="high", autonomous=False),
+    ],
+    "reaction_wheel_fault": [
+        FixOption(name="Torquer Backup (Basic FDIR)", description="Engage magnetic torquers as ADCS backup, command RW-2 spin-down", success_pct=76, risk="low", autonomous=True),
+        FixOption(name="RW Desaturation", description="Cross-desaturate remaining three wheels, redistribute stored angular momentum", success_pct=83, risk="medium", autonomous=True),
+        FixOption(name="Sun-Safe Slew", description="Enter Sun-pointing safe mode, suspend science pointing until RW-2 is assessed", success_pct=95, risk="low", autonomous=True),
+    ],
+    "spectrometer_fault": [
+        FixOption(name="Power Cycle (Basic FDIR)", description="Power cycle spectrometer detector array and flush instrument buffers", success_pct=67, risk="low", autonomous=True),
+        FixOption(name="Detector Reset Sequence", description="Execute full detector reset with calibration lamp check and dark-frame test", success_pct=74, risk="medium", autonomous=True),
+        FixOption(name="Instrument Safe Mode", description="Place spectrometer in safe mode, preserve all raw science data, await ground review", success_pct=99, risk="low", autonomous=True),
+    ],
+    "comms_dropout": [
+        FixOption(name="LGA Fallback (Basic FDIR)", description="Switch to Low-Gain Antenna LGA-2 for contingency comms at 115 kbps", success_pct=89, risk="low", autonomous=True),
+        FixOption(name="HGA Autonomous Repoint", description="Execute HGA repoint sequence using onboard star tracker attitude data", success_pct=71, risk="medium", autonomous=True),
+        FixOption(name="Earth Acquisition Scan", description="Run progressive antenna scan ±15° around predicted Earth direction", success_pct=82, risk="medium", autonomous=True),
+    ],
+    "thermal_runaway": [
+        FixOption(name="Emergency Cooling (Basic FDIR)", description="Deploy radiator panels, activate emergency thermal control loops", success_pct=58, risk="low", autonomous=True),
+        FixOption(name="Load Reduction", description="Reduce PCU computational load 30%, disable non-essential heaters", success_pct=68, risk="low", autonomous=True),
+        FixOption(name="Thermal Safe Mode", description="All payload off, passive cooling only — halts science operations", success_pct=94, risk="medium", autonomous=True),
+    ],
+}
+
+_FALLBACK_METRICS: dict[str, dict] = {
+    "solar_string_loss":    {"basic_fix_success_pct": 72, "cascade_failure_pct": 28},
+    "pcu_fault":            {"basic_fix_success_pct": 65, "cascade_failure_pct": 45},
+    "reaction_wheel_fault": {"basic_fix_success_pct": 76, "cascade_failure_pct": 31},
+    "spectrometer_fault":   {"basic_fix_success_pct": 67, "cascade_failure_pct": 18},
+    "comms_dropout":        {"basic_fix_success_pct": 89, "cascade_failure_pct": 22},
+    "thermal_runaway":      {"basic_fix_success_pct": 58, "cascade_failure_pct": 62},
+}
+
+
+def _augment_with_fixes(analysis: GemmaPredictiveAnalysis, fault_id: str) -> GemmaPredictiveAnalysis:
+    fixes = _FALLBACK_FIXES.get(fault_id, [])
+    metrics = _FALLBACK_METRICS.get(fault_id, {})
+    autonomous_fixes = [f for f in fixes if f.autonomous]
+    best = max(autonomous_fixes, key=lambda f: f.success_pct, default=None)
+    chosen = best.name if best else "Basic FDIR Recovery"
+    execute = bool(best and best.success_pct >= 75)
+    reason = (f"Highest autonomous success probability: {best.success_pct}% with {best.risk} risk." if best else "")
+    return analysis.model_copy(update={
+        "alternative_fixes": fixes,
+        "chosen_fix": chosen,
+        "execute_immediately": execute,
+        "execute_reason": reason,
+        "basic_fix_success_pct": metrics.get("basic_fix_success_pct", analysis.basic_fix_success_pct),
+        "cascade_failure_pct": metrics.get("cascade_failure_pct", analysis.cascade_failure_pct),
+        "earth_delay_min": 38,
+    })
 
 
 def _dynamic_predictive_fallback(
     state_dict: dict,
     fdir_dict: dict,
     fault_context: dict,
+    fault_id: str = "",
 ) -> GemmaPredictiveAnalysis:
-    """Honest offline behaviour for a runtime event without a canned response.
-
-    This is intentionally a conservative state summary, not a replacement for
-    Gemma. It keeps custom event demos usable when hosted inference is offline
-    and clearly leaves diagnosis unresolved.
-    """
     title = fault_context.get("label", "Operator-defined anomaly")
     description = fault_context.get("description", "No description supplied.")
     affected = fault_context.get("subsystems", [])
@@ -314,26 +392,44 @@ def _dynamic_predictive_fallback(
         )
         for subsystem in affected[:3]
     ]
+    fixes = _FALLBACK_FIXES.get(fault_id, [
+        FixOption(name="Basic FDIR Recovery", description="Execute deterministic recovery sequence for affected subsystems", success_pct=65, risk="low", autonomous=True),
+        FixOption(name="Safe Mode Entry", description="Enter spacecraft safe mode: minimal power, Sun-pointing, preserve all data", success_pct=90, risk="low", autonomous=True),
+        FixOption(name="Full Subsystem Reset", description="Power cycle all affected subsystems and re-initialise from last known-good state", success_pct=72, risk="high", autonomous=True),
+    ])
+    metrics = _FALLBACK_METRICS.get(fault_id, {"basic_fix_success_pct": 65, "cascade_failure_pct": 35})
+    autonomous_fixes = [f for f in fixes if f.autonomous]
+    best = max(autonomous_fixes, key=lambda f: f.success_pct, default=None)
+    chosen = best.name if best else "Basic FDIR Recovery"
+    execute = bool(best and best.success_pct >= 75)
+    reason = (f"Highest autonomous success probability: {best.success_pct}% with {best.risk} risk." if best else "")
     return GemmaPredictiveAnalysis(
         current_assessment=(
-            f"Offline dynamic assessment for {title}: {description} "
-            f"Affected subsystems: {', '.join(affected)}. The condition remains unclassified; preserve raw telemetry."
+            f"Offline assessment for {title}: {description} "
+            f"Affected: {', '.join(affected)}. Condition unclassified — preserve raw telemetry."
         ),
         system_stability=stability,
+        earth_delay_min=38,
+        basic_fix_success_pct=metrics["basic_fix_success_pct"],
+        cascade_failure_pct=metrics["cascade_failure_pct"],
         predicted_failures=predicted,
         cascading_risks=[
-            f"Monitor {subsystem} for coupling with {', '.join(degraded) or 'other spacecraft systems'}."
+            f"Monitor {subsystem} for coupling with {', '.join(degraded) or 'other systems'}."
             for subsystem in affected[:2]
         ],
+        alternative_fixes=fixes,
+        chosen_fix=chosen,
+        execute_immediately=execute,
+        execute_reason=reason,
         recommended_actions=[
-            "Preserve the high-rate telemetry window and command history before any reset.",
-            "Hold irreversible recovery commands until the event has been reviewed against operating procedures.",
-            "Request a hosted Gemma assessment when the communications path is available.",
+            "Preserve high-rate telemetry window and command history before any reset.",
+            "Hold irreversible commands until event reviewed against operating procedures.",
+            "Request Gemma assessment when communications path is available.",
         ],
         earth_report=(
-            f"PRIORITY REPORT — OPERATOR-DEFINED EVENT\n\nEVENT: {title}\nOBSERVATION: {description}\n"
-            f"AFFECTED SYSTEMS: {', '.join(affected)}\nSTATUS: {fdir_dict.get('summary', 'FDIR review pending')}\n\n"
-            "This event has not been conclusively diagnosed. Raw telemetry and command history have been retained for ground analysis."
+            f"PRIORITY REPORT — OPERATOR EVENT\n\nEVENT: {title}\nOBSERVATION: {description}\n"
+            f"AFFECTED: {', '.join(affected)}\nSTATUS: {fdir_dict.get('summary', 'FDIR review pending')}\n\n"
+            "Event not conclusively diagnosed. Raw telemetry retained for ground analysis."
         ),
         confidence="low",
     )

@@ -26,10 +26,7 @@ class SourceReference(BaseModel):
 class ParallaxAnalysis(BaseModel):
     event_summary: str
     resolution_status: Literal[
-        "known_event",
-        "likely_fault",
-        "likely_scientific_event",
-        "unresolved"
+        "known_event", "likely_fault", "likely_scientific_event", "unresolved"
     ]
     hypotheses: list[Hypothesis]
     preservation_priorities: list[EvidenceAssessment]
@@ -63,11 +60,26 @@ class PredictedFailure(BaseModel):
     early_warning_signs: list[str]
 
 
+class FixOption(BaseModel):
+    name: str
+    description: str
+    success_pct: int = Field(default=70, ge=0, le=100)
+    risk: Literal["low", "medium", "high"] = "medium"
+    autonomous: bool = True
+
+
 class GemmaPredictiveAnalysis(BaseModel):
     current_assessment: str
     system_stability: Literal["stable", "degraded", "critical", "unknown"]
+    earth_delay_min: int = 38
+    basic_fix_success_pct: int = Field(default=70, ge=0, le=100)
+    cascade_failure_pct: int = Field(default=25, ge=0, le=100)
     predicted_failures: list[PredictedFailure]
     cascading_risks: list[str]
+    alternative_fixes: list[FixOption] = []
+    chosen_fix: str = "Basic FDIR Recovery"
+    execute_immediately: bool = True
+    execute_reason: str = ""
     recommended_actions: list[str]
     earth_report: str
     confidence: Literal["low", "medium", "high"]

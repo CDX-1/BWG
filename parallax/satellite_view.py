@@ -9,11 +9,11 @@ from parallax.spacecraft import SpacecraftState
 
 
 STATUS_COLORS = {
-    "nominal": "#22c55e",
-    "degraded": "#f59e0b",
-    "failed": "#ef4444",
-    "recovering": "#60a5fa",
-    "standby": "#64748b",
+    "nominal": "#059669",
+    "degraded": "#d97706",
+    "failed": "#dc2626",
+    "recovering": "#2563eb",
+    "standby": "#94a3b8",
 }
 
 
@@ -100,10 +100,10 @@ def build_satellite_figure(state: SpacecraftState) -> go.Figure:
         ))
 
     fig.update_layout(
-        height=390, margin={"l": 0, "r": 0, "t": 0, "b": 0},
-        paper_bgcolor="#0d1117", plot_bgcolor="#0d1117", showlegend=False,
+        height=360, margin={"l": 0, "r": 0, "t": 0, "b": 0},
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False,
         scene={
-            "bgcolor": "#0d1117",
+            "bgcolor": "rgba(0,0,0,0)",
             "xaxis": {"visible": False}, "yaxis": {"visible": False}, "zaxis": {"visible": False},
             "aspectmode": "data",
             "camera": {"eye": {"x": 1.6, "y": -1.9, "z": 1.25}},
